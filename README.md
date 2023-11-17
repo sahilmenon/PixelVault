@@ -1,2 +1,4 @@
 # ByteVault Infinite: The Eternal Encoder
- Encodes any file into a video format, which can be hosted on YouTube as an infinite cloud storage.
+Inspired my Steganography, ByteVault Infinite: The Eternal Encoder is a clever project that transforms diverse file types into bytes, encodes them into video format, and utilizes YouTube as an unconventional but infinite cloud storage solution. Designed to be more of an inventive showcase of compression techniques for data transfer rather than a traditional cloud service, the project advises against extensive utilization. It showcases a playful proof of concept, converting files into videos for storage on YouTube, offering an intentionally slow yet effectively limitless form of file storage.
+
+Similar projects include YouTubeDrive and Infinite-Storage-Glitch.
