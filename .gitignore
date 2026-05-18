@@ -1,0 +1,30 @@
+# YouTube API credentials — never commit these
+client_secret.json
+.youtube_token.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# Test artifacts
+*.mp4
+*.raw
+test_output*/
+
+# Benchmark working directory (test data, result MP4s, JSON output)
+bench/
+
+# Vault contents — encoded videos and recovered files are user data, not source
+vault/input/*
+vault/encoded/*
+vault/decoded/*
+# Keep the directory structure markers
+!vault/input/.gitkeep
+!vault/encoded/.gitkeep
+!vault/decoded/.gitkeep

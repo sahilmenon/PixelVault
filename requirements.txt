@@ -2,6 +2,7 @@
 numpy>=1.24
 opencv-python>=4.8
 tqdm>=4.65
+reedsolo>=1.7  # Reed-Solomon ECC for --ecc flag
 
 # YouTube download
 yt-dlp>=2024.1.1
