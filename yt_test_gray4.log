@@ -1,0 +1,20 @@
+================================================================
+  ByteVault — YouTube Roundtrip Bit-Accuracy Test
+================================================================
+  File     : broken_money.pdf
+  Size     : 118.4 MB (124,166,229 bytes)
+  SHA-256  : 2a3460ac63fc08ef4a90bc254d49b200ad9426266881669e06c52eded5ecf9fa
+  Mode     : gray4
+  Res      : 3840×2160 (4K)
+  Compress : False
+  ECC      : nsym=0 (disabled)
+  Audio    : off (does not survive YouTube re-encoding)
+  Encoded  -> vault/encoded/
+  Decoded  -> vault/decoded/
+================================================================
+
+[1/5] Encoding -> vault\encoded\broken_money_encoded.mp4
+[encode] broken_money.pdf  124,166,229 bytes
+[encode] mode=gray4  block=4  res=3840×2160  fps=30
+[encode] encoder=libx264  workers=4
+[encode] frames=989  duration~33.0s  (pad=30)

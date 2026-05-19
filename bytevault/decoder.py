@@ -29,6 +29,7 @@ from tqdm import tqdm
 from .encoder import (
     MAGIC_V1, MAGIC_V2, HEADER_SIZE, HEADER_STRUCT,
     MODE_BINARY, MODE_RGB, MODE_PALETTE, MODE_RGB_BIN, MODE_NIBBLE, MODE_GRAY4,
+    ENC_NONE, ENC_AES_GCM, _decrypt_payload,
 )
 from .palette import bgr_array_to_bytes, bgr_array_to_nibbles
 from . import audio as _audio
@@ -283,7 +284,7 @@ def _parse_header(data: bytes):
      file_size, padding_bytes,
      audio_bytes, audio_n_levels, audio_block,
      flags, compressed_size, ecc_nsym,
-     interleave_depth) = struct.unpack_from(HEADER_STRUCT, data)
+     interleave_depth, enc_type, nonce) = struct.unpack_from(HEADER_STRUCT, data)
 
     if magic not in _MAGIC_ALL:
         raise ValueError(f"Bad magic bytes: {magic!r}")
@@ -293,7 +294,7 @@ def _parse_header(data: bytes):
         int(file_size), int(padding_bytes),
         int(audio_bytes), int(audio_n_levels), int(audio_block),
         int(flags), int(compressed_size), int(ecc_nsym),
-        int(interleave_depth),
+        int(interleave_depth), int(enc_type), bytes(nonce),
     )
 
 
@@ -360,7 +361,7 @@ def _extract_audio_bytes(
 # ---------------------------------------------------------------------------
 
 def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
-                workers: int = 0) -> str:
+                workers: int = 0, decrypt_password: str | None = None) -> str:
     """Decode *video_path* back to the original file inside *output_dir*.
 
     Handles both BVI\\x01 (video-only) and BVI\\x02 (audio-extended) formats.
@@ -426,8 +427,8 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
         (_, _, filename, file_size, _padding,
          audio_bytes, audio_n_levels, audio_block_size,
          hdr_flags, hdr_compressed_size, hdr_ecc_nsym,
-         hdr_interleave_depth) = _parse_header(np.packbits(first_bits[:HEADER_SIZE * 8]).tobytes())
-        _ps = hdr_compressed_size if (hdr_flags & 1) else file_size
+         hdr_interleave_depth, hdr_enc_type, hdr_nonce) = _parse_header(np.packbits(first_bits[:HEADER_SIZE * 8]).tobytes())
+        _ps = hdr_compressed_size if (hdr_flags & 3) else file_size
         _vfb = _ecc.encoded_size(_ps, hdr_ecc_nsym) - audio_bytes
         _vfb_padded_bits = (-(-_vfb // hdr_interleave_depth) * hdr_interleave_depth
                             if hdr_interleave_depth > 1 else _vfb)
@@ -436,6 +437,8 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
             print(f"[decode] file={filename!r}  size={file_size:,} bytes")
             if hdr_flags & 1:
                 print(f"[decode] compressed payload: {hdr_compressed_size:,} bytes (zlib)")
+            if hdr_flags & 2:
+                print(f"[decode] encrypted (AES-256-GCM)")
             if hdr_ecc_nsym > 0:
                 print(f"[decode] ECC nsym={hdr_ecc_nsym}  correcting errors...")
             if hdr_interleave_depth > 1:
@@ -508,8 +511,8 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
             (_, _, filename, file_size, _padding,
              audio_bytes, audio_n_levels, audio_block_size,
              hdr_flags, hdr_compressed_size, hdr_ecc_nsym,
-             hdr_interleave_depth) = _parse_header(raw_so_far[:HEADER_SIZE])
-            _ps = hdr_compressed_size if (hdr_flags & 1) else file_size
+             hdr_interleave_depth, hdr_enc_type, hdr_nonce) = _parse_header(raw_so_far[:HEADER_SIZE])
+            _ps = hdr_compressed_size if (hdr_flags & 3) else file_size
             _vfb = _ecc.encoded_size(_ps, hdr_ecc_nsym) - audio_bytes
             _vfb_padded = (-(-_vfb // hdr_interleave_depth) * hdr_interleave_depth
                            if hdr_interleave_depth > 1 else _vfb)
@@ -519,6 +522,8 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
                 print(f"[decode] file={filename!r}  size={file_size:,} bytes")
                 if hdr_flags & 1:
                     print(f"[decode] compressed payload: {hdr_compressed_size:,} bytes (zlib)")
+                if hdr_flags & 2:
+                    print(f"[decode] encrypted (AES-256-GCM)")
                 if hdr_ecc_nsym > 0:
                     print(f"[decode] ECC nsym={hdr_ecc_nsym}  correcting errors...")
                 if hdr_interleave_depth > 1:
@@ -558,8 +563,8 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
                     (_, _, filename, file_size, _padding,
                      audio_bytes, audio_n_levels, audio_block_size,
                      hdr_flags, hdr_compressed_size, hdr_ecc_nsym,
-                     hdr_interleave_depth) = _parse_header(raw_so_far[:HEADER_SIZE])
-                    _ps = hdr_compressed_size if (hdr_flags & 1) else file_size
+                     hdr_interleave_depth, hdr_enc_type, hdr_nonce) = _parse_header(raw_so_far[:HEADER_SIZE])
+                    _ps = hdr_compressed_size if (hdr_flags & 3) else file_size
                     _vfb = _ecc.encoded_size(_ps, hdr_ecc_nsym) - audio_bytes
                     _vfb_padded = (-(-_vfb // hdr_interleave_depth) * hdr_interleave_depth
                                    if hdr_interleave_depth > 1 else _vfb)
@@ -569,6 +574,8 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
                         print(f"[decode] file={filename!r}  size={file_size:,} bytes")
                         if hdr_flags & 1:
                             print(f"[decode] compressed payload: {hdr_compressed_size:,} bytes (zlib)")
+                        if hdr_flags & 2:
+                            print(f"[decode] encrypted (AES-256-GCM)")
                         if hdr_ecc_nsym > 0:
                             print(f"[decode] ECC nsym={hdr_ecc_nsym}  correcting errors...")
                         if hdr_interleave_depth > 1:
@@ -592,7 +599,7 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
 
         payload = b"".join(payload_chunks)
 
-    payload_size = hdr_compressed_size if (hdr_flags & 1) else file_size
+    payload_size = hdr_compressed_size if (hdr_flags & 3) else file_size
     ecc_size = _ecc.encoded_size(payload_size, hdr_ecc_nsym)
     video_file_bytes = ecc_size - audio_bytes
     _vfb_padded = (-(-video_file_bytes // hdr_interleave_depth) * hdr_interleave_depth
@@ -623,9 +630,25 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
     else:
         raw_payload = ecc_data[:payload_size]
 
-    # --- Step 6: decompress if needed ---
+    # --- Step 6: decrypt if needed ---
+    if hdr_enc_type == ENC_AES_GCM:
+        if not decrypt_password:
+            raise ValueError(
+                "This video is encrypted. Provide the password with --password."
+            )
+        if not quiet:
+            print("[decode] decrypting (AES-256-GCM) ...")
+        try:
+            raw_payload = _decrypt_payload(raw_payload, decrypt_password, hdr_nonce)
+        except Exception as exc:
+            raise ValueError(
+                "Decryption failed — wrong password or corrupted data."
+            ) from exc
+
+    # --- Step 7: decompress if needed ---
     if hdr_flags & 1:
-        file_data = zlib.decompress(raw_payload[:hdr_compressed_size])
+        zlib_size = hdr_compressed_size - (16 if hdr_enc_type == ENC_AES_GCM else 0)
+        file_data = zlib.decompress(raw_payload[:zlib_size])
     else:
         file_data = raw_payload
 

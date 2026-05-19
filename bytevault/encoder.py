@@ -38,6 +38,39 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
+# ---------------------------------------------------------------------------
+# Encryption helpers (AES-256-GCM via cryptography package)
+# ---------------------------------------------------------------------------
+
+ENC_NONE    = 0
+ENC_AES_GCM = 1
+_NONCE_SIZE = 12  # AES-GCM standard nonce
+
+
+def _derive_key(password: str, nonce: bytes) -> bytes:
+    """Derive a 32-byte AES-256 key from password + nonce (PBKDF2-SHA256)."""
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
+                     salt=nonce + b"ByteVault", iterations=200_000)
+    return kdf.derive(password.encode("utf-8"))
+
+
+def _encrypt_payload(data: bytes, password: str) -> tuple[bytes, bytes]:
+    """Return (nonce, ciphertext_with_16_byte_tag)."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    nonce = os.urandom(_NONCE_SIZE)
+    key   = _derive_key(password, nonce)
+    ct    = AESGCM(key).encrypt(nonce, data, None)
+    return nonce, ct
+
+
+def _decrypt_payload(ct_with_tag: bytes, password: str, nonce: bytes) -> bytes:
+    """Decrypt and authenticate; raises InvalidTag on wrong password/corruption."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    key = _derive_key(password, nonce)
+    return AESGCM(key).decrypt(nonce, ct_with_tag, None)
+
 from .palette import PALETTE_BGR, NIBBLE_PALETTE_BGR
 from . import audio as _audio
 from . import ecc as _ecc
@@ -46,8 +79,10 @@ MAGIC_V1 = b"BVI\x01"   # video-only (legacy)
 MAGIC_V2 = b"BVI\x02"   # audio-extended
 
 HEADER_SIZE = 128
-HEADER_STRUCT = "<4sBBH64sQIIBBBQBI"  # 104 bytes; + 24 zeros = 128
-# Added field: I = interleave_depth (uint32); 0/1 = no interleaving
+HEADER_STRUCT = "<4sBBH64sQIIBBBQBIB12s"  # 117 bytes; + 11 zeros = 128
+# Fields: magic, mode, block_size, fname_len, fname, file_size, padding_bytes,
+#         audio_bytes, audio_n_levels, audio_block, flags, compressed_size,
+#         ecc_nsym, interleave_depth, enc_type, nonce
 
 MODE_BINARY = 0   # 1 bit per logical pixel (black=0, white=1)
 MODE_RGB = 1      # 3 bytes per logical pixel (one byte per channel)
@@ -61,7 +96,7 @@ _MODE_NAMES = {
     MODE_RGB_BIN: "rgb_bin", MODE_NIBBLE: "nibble", MODE_GRAY4: "gray4",
 }
 
-DEFAULT_BLOCK = {MODE_BINARY: 2, MODE_RGB: 2, MODE_PALETTE: 4, MODE_RGB_BIN: 2, MODE_NIBBLE: 4, MODE_GRAY4: 2}
+DEFAULT_BLOCK = {MODE_BINARY: 2, MODE_RGB: 2, MODE_PALETTE: 4, MODE_RGB_BIN: 2, MODE_NIBBLE: 4, MODE_GRAY4: 4}
 WIDTH    = 1920   # default 1080p
 HEIGHT   = 1080
 WIDTH_4K = 3840   # 4K UHD — 4× data per frame, YouTube serves as VP9
@@ -121,6 +156,8 @@ def _build_header(
     compressed_size: int = 0,
     ecc_nsym: int = 0,
     interleave_depth: int = 0,
+    enc_type: int = ENC_NONE,
+    nonce: bytes = b"\x00" * _NONCE_SIZE,
 ) -> bytes:
     # If the filename is too long, trim the stem but always keep the extension
     # so the decoded file gets the right type (e.g. .pdf, .zip).
@@ -140,6 +177,7 @@ def _build_header(
         audio_bytes, audio_n_levels, audio_block,
         flags, compressed_size, ecc_nsym,
         interleave_depth,
+        enc_type, nonce.ljust(_NONCE_SIZE, b"\x00")[:_NONCE_SIZE],
     )
     return raw + b"\x00" * (HEADER_SIZE - len(raw))
 
@@ -449,8 +487,14 @@ def encode_file(
     interleave: bool = False,
     workers: int = 0,
     use_hw_encoder: bool = True,
+    raw_bytes: bytes | None = None,
+    encrypt_password: str | None = None,
 ) -> str:
     """Encode *input_path* into an MP4 video at *output_path*.
+
+    *raw_bytes* overrides reading *input_path* — useful for chunked encoding
+    where the caller slices the source file and passes each slice directly.
+    The filename stored in the video header is always taken from *input_path*.
 
     When *use_audio* is True, part of the file payload is stored in the audio
     track (amplitude-level PCM, AAC-encoded) and the remainder in video frames.
@@ -485,19 +529,35 @@ def encode_file(
 
     lw, lh = width // block_size, height // block_size
     input_path = Path(input_path)
-    file_data = input_path.read_bytes()
+    file_data = raw_bytes if raw_bytes is not None else input_path.read_bytes()
     file_size = len(file_data)
 
     # --- Optional zlib compression ---
     flags = 0
     compressed_size = 0
     payload_data = file_data
+    zlib_out_size = None
     if compress and file_size > 0:
         candidate = zlib.compress(file_data, level=6)
         if len(candidate) < len(file_data):
             payload_data = candidate
-            flags = 1
-            compressed_size = len(candidate)
+            flags |= 1
+            zlib_out_size = len(candidate)
+
+    # --- Optional AES-256-GCM encryption ---
+    enc_type = ENC_NONE
+    nonce = b"\x00" * _NONCE_SIZE
+    if encrypt_password:
+        nonce, payload_data = _encrypt_payload(payload_data, encrypt_password)
+        enc_type = ENC_AES_GCM
+        flags |= 2
+
+    # compressed_size stores the pre-ECC payload size when any transform was applied.
+    # When only compress: len(zlib_data). When encrypt (±compress): len(ciphertext+tag).
+    if flags & 2:
+        compressed_size = len(payload_data)
+    elif flags & 1:
+        compressed_size = zlib_out_size
 
     # --- Optional Reed-Solomon ECC ---
     # ECC is applied to payload_data; the video+audio carry ecc_data
@@ -534,6 +594,7 @@ def encode_file(
         audio_file_bytes, audio_n_levels if use_audio else 0,
         audio_block if use_audio else 0,
         flags, compressed_size, ecc_nsym, interleave_depth,
+        enc_type, nonce,
     )
     initial_payload_len = len(placeholder_header) + len(video_data)
     padding = _calc_padding(initial_payload_len, mode, lw, lh)
@@ -543,6 +604,7 @@ def encode_file(
         audio_file_bytes, audio_n_levels if use_audio else 0,
         audio_block if use_audio else 0,
         flags, compressed_size, ecc_nsym, interleave_depth,
+        enc_type, nonce,
     )
     video_payload = header + video_data + b"\x00" * padding
 
@@ -550,10 +612,13 @@ def encode_file(
     if not quiet:
         print(f"[encode] {input_path.name}  {file_size:,} bytes")
         if flags & 1:
-            ratio = compressed_size / file_size if file_size else 1
-            print(f"[encode] compressed {file_size:,} -> {compressed_size:,} bytes ({ratio:.1%})")
+            ratio = (zlib_out_size or 0) / file_size if file_size else 1
+            print(f"[encode] compressed {file_size:,} -> {zlib_out_size:,} bytes ({ratio:.1%})")
+        if flags & 2:
+            print(f"[encode] encrypted (AES-256-GCM)  payload {len(payload_data):,} bytes")
         if ecc_nsym > 0:
-            overhead = (ecc_size - (compressed_size or file_size)) / max(compressed_size or file_size, 1)
+            pre_ecc = len(payload_data)
+            overhead = (ecc_size - pre_ecc) / max(pre_ecc, 1)
             print(f"[encode] ECC nsym={ecc_nsym}  overhead +{overhead:.1%}  ({ecc_size:,} bytes encoded)")
         print(f"[encode] mode={mode_name}  block={block_size}  res={width}×{height}  fps={fps}")
         print(f"[encode] encoder={hw_enc or 'libx264'}  workers={n_workers}"

@@ -98,8 +98,8 @@ def main():
     print(f"  Compress : {args.compress}")
     print(f"  ECC      : nsym={args.ecc_nsym}" + (" (disabled)" if args.ecc_nsym == 0 else ""))
     print(f"  Audio    : off (does not survive YouTube re-encoding)")
-    print(f"  Encoded  → vault/encoded/")
-    print(f"  Decoded  → vault/decoded/")
+    print(f"  Encoded  -> vault/encoded/")
+    print(f"  Decoded  -> vault/decoded/")
     print("=" * 64)
 
     from bytevault.encoder import (
@@ -116,7 +116,7 @@ def main():
 
     # ── 1. Encode ─────────────────────────────────────────────────────────────
     encoded_mp4 = VAULT_ENCODED / f"{input_path.stem}_encoded.mp4"
-    _step(1, f"Encoding → {encoded_mp4}")
+    _step(1, f"Encoding -> {encoded_mp4}")
 
     t0 = time.perf_counter()
     encode_file(
@@ -174,7 +174,7 @@ def main():
     downloaded_mp4 = VAULT_ENCODED / f"yt_{video_id}.mp4"
     url = f"https://www.youtube.com/watch?v={video_id}"
 
-    _step(4, f"Downloading from YouTube → {downloaded_mp4.name} ...")
+    _step(4, f"Downloading from YouTube -> {downloaded_mp4.name} ...")
     for attempt in range(1, args.retries + 1):
         try:
             yt.download(url, output_path=str(downloaded_mp4), min_height=min_h)
@@ -189,7 +189,7 @@ def main():
                 sys.exit(1)
 
     # ── 5. Decode ─────────────────────────────────────────────────────────────
-    _step(5, f"Decoding → vault/decoded/ ...")
+    _step(5, f"Decoding -> vault/decoded/ ...")
     t0 = time.perf_counter()
     recovered_path = decode_file(
         video_path=str(downloaded_mp4),
@@ -199,7 +199,7 @@ def main():
     decode_time = time.perf_counter() - t0
     recovered_data = Path(recovered_path).read_bytes()
     recovered_hash = _sha256(recovered_data)
-    print(f"     Done in {decode_time:.1f}s  → {Path(recovered_path).name}")
+    print(f"     Done in {decode_time:.1f}s  -> {Path(recovered_path).name}")
 
     # ── Verify ────────────────────────────────────────────────────────────────
     print()

@@ -1,19 +1,32 @@
 #!/usr/bin/env python3
 """
-ByteVault Cross-Tool Benchmark — Jellyfish Edition
+ByteVault Jellyfish Benchmark — Python 3 programs only, real GitHub code
 
-Downloads real-world Jellyfish video files as binary test data and benchmarks
-9 file-to-video encoding tools. Each (tool, file) pair runs 3 times.
-README is updated after each file size completes.
+Tests only Python 3 file-to-video tools using their actual code unmodified
+(or with minimal non-functional changes: CLI wiring, import compatibility):
 
-Faithful per-tool configurations:
-  ISG-equiv        2x2 blocks, 1080p, 30 FPS, NO ECC, NO compression
-  YouBit-equiv     1x1 pixels, 1080p, 1 FPS,  gzip(6) + RS-20 ECC
-  bin2video-equiv  5x5 blocks,  720p, 30 FPS, NO ECC, NO compression
-  Data2Video-equiv 1x1 pixels,   4K,  10 FPS, NO ECC, NO compression
-  binary2video     raw RGB24, 320x240, 1 FPS,  gzip(1), FFV1 lossless
-  file2video       270x270 grid->1080p, 20 FPS, RS-10 ECC, CRF=40
-  ByteVault bs=2 ecc=16 1080p | bs=1 ecc=16 1080p | bs=2 ecc=16 4K
+  ByteVault (this project)
+      python main.py encode / decode
+
+  file2video  (github.com/karaketir16/file2video)
+      python file2video.py --encode / --decode
+      Cloned automatically on first run into third_party/file2video/
+
+  YouBit  (github.com/MeViMo/youbit)
+      youbit.encode.Encoder / youbit.decode.decode_local
+      Non-functional changes: replaced Cython ECC with reedsolo, numba with numpy,
+      relaxed version constraints. Local decode path added for non-YouTube videos.
+      Located at third_party/youbit/
+
+Excluded Python tools and reasons:
+  DataToVideoEncoderDecoder — pixel_size mismatch (enc=5, dec=10) means roundtrip
+                              always fails. OOM on large files (all frames in RAM).
+  qStore             — requires ffmpeg installed system-wide; QR encode/decode is
+                       extremely slow and file must be a .zip/.tar.gz.
+
+Each (tool, file-size) pair runs RUNS times.  Results are checkpointed to
+bench/jellyfish_results.json after every individual run so the script can
+resume from a crash.  README is updated after every file-size group.
 """
 
 import hashlib
@@ -25,53 +38,51 @@ import sys
 import threading
 import time
 import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
-import cv2
-import numpy as np
-
-# ── config ───────────────────────────────────────────────────────────────────
+# ── paths & config ────────────────────────────────────────────────────────────
 ROOT         = Path(__file__).parent
 BENCH_DIR    = ROOT / "bench"
 DATA_DIR     = BENCH_DIR / "jellyfish"
 OUT_DIR      = BENCH_DIR / "jf_results"
 RESULTS_JSON = BENCH_DIR / "jellyfish_results.json"
 README       = ROOT / "README.md"
-FFMPEG       = "ffmpeg"
-FFPROBE      = "ffprobe"
 BV_ROOT      = ROOT
+THIRD_PARTY  = ROOT / "third_party"
+F2V_DIR      = THIRD_PARTY / "file2video"
+YB_DIR       = THIRD_PARTY / "youbit"
 
 RUNS        = 3
-ENC_TIMEOUT = 1800   # 30 min
-DEC_TIMEOUT = 1800   # 30 min
+ENC_TIMEOUT = 1800   # 30 min per encode
+DEC_TIMEOUT = 1800   # 30 min per decode
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+BENCH_DIR.mkdir(parents=True, exist_ok=True)
+THIRD_PARTY.mkdir(parents=True, exist_ok=True)
 
-# ── jellyfish test files ──────────────────────────────────────────────────────
+# ── Jellyfish test files ──────────────────────────────────────────────────────
 BASE_URL = "http://larmoire.org/jellyfish/media/"
-
 JELLYFISH = [
-    ("~15 MB HD",  "jellyfish-3-mbps-hd-h264.mkv"),
-    ("~52 MB HD",  "jellyfish-10-mbps-hd-h264.mkv"),
-    ("~150 MB HD", "jellyfish-40-mbps-hd-h264.mkv"),
-    ("~375 MB HD", "jellyfish-100-mbps-hd-h264.mkv"),
-    ("~450 MB 4K", "jellyfish-120-mbps-4k-uhd-h264.mkv"),
-    ("~1.4 GB 4K", "jellyfish-400-mbps-4k-uhd-hevc-10bit.mkv"),
+    ("~15 MB HD",   "jellyfish-3-mbps-hd-h264.mkv"),
+    ("~52 MB HD",   "jellyfish-10-mbps-hd-h264.mkv"),
+    ("~150 MB HD",  "jellyfish-40-mbps-hd-h264.mkv"),
+    ("~375 MB HD",  "jellyfish-100-mbps-hd-h264.mkv"),
+    ("~450 MB 4K",  "jellyfish-120-mbps-4k-uhd-h264.mkv"),
+    ("~1.4 GB 4K",  "jellyfish-400-mbps-4k-uhd-hevc-10bit.mkv"),
 ]
 
+# If the large file already exists locally, copy instead of download
 PREDOWNLOADED = {
     "jellyfish-400-mbps-4k-uhd-hevc-10bit.mkv":
         Path(r"C:\Users\sahil\Downloads\jellyfish-400-mbps-4k-uhd-hevc-10bit.mkv"),
 }
 
-# ── per-thread subprocess tracking (for timeout kills) ───────────────────────
-# Each encode/decode function registers its active subprocess so the timeout
-# handler can kill it when the thread is abandoned.
-
-_active_procs: dict = {}   # {thread_ident: subprocess.Popen}
+# ── per-thread subprocess tracking (for timeout kill) ────────────────────────
+_active_procs: dict = {}
 _procs_lock = threading.Lock()
 
 def _reg_proc(proc):
@@ -88,7 +99,6 @@ def _kill_thread_proc(thread_ident: int):
     if proc is None:
         return
     try:
-        # Use taskkill /T to also kill ffmpeg grandchildren
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                        capture_output=True, check=False, timeout=10)
     except Exception:
@@ -97,451 +107,12 @@ def _kill_thread_proc(thread_ident: int):
         except Exception:
             pass
 
-
-# ── ffmpeg helpers ────────────────────────────────────────────────────────────
-
-def ffmpeg_pipe_encode(frames_iter, w, h, fps, crf, output_path,
-                       pix_fmt="yuv420p", extra_opts=None):
-    cmd = [FFMPEG, "-y",
-           "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", str(fps),
-           "-i", "pipe:0",
-           "-c:v", "libx264", "-crf", str(crf), "-pix_fmt", pix_fmt]
-    if extra_opts:
-        cmd += extra_opts
-    cmd.append(str(output_path))
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    _reg_proc(proc)
-    try:
-        for frame in frames_iter:
-            proc.stdin.write(frame.tobytes())
-        proc.stdin.close()
-        proc.wait()
-    finally:
-        _unreg_proc()
-
-
-def ffmpeg_lossless_encode(frames_iter, w, h, fps, output_path):
-    cmd = [FFMPEG, "-y",
-           "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(fps),
-           "-i", "pipe:0",
-           "-c:v", "ffv1", "-pix_fmt", "rgb24", str(output_path)]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    _reg_proc(proc)
-    try:
-        for frame in frames_iter:
-            proc.stdin.write(frame.tobytes())
-        proc.stdin.close()
-        proc.wait()
-    finally:
-        _unreg_proc()
-
-
-def ffmpeg_lossless_decode(video_path):
-    r = subprocess.run(
-        [FFPROBE, "-v", "quiet", "-print_format", "json",
-         "-show_streams", "-select_streams", "v:0", str(video_path)],
-        capture_output=True, text=True, check=True)
-    s = json.loads(r.stdout)["streams"][0]
-    w, h = s["width"], s["height"]
-    frame_size = w * h * 3
-    proc = subprocess.Popen(
-        [FFMPEG, "-i", str(video_path),
-         "-f", "rawvideo", "-pix_fmt", "rgb24", "-vsync", "0", "pipe:1"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    try:
-        while True:
-            raw = proc.stdout.read(frame_size)
-            if len(raw) < frame_size:
-                break
-            yield np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3)
-    finally:
-        proc.stdout.close()
-        proc.terminate()
-        proc.wait(timeout=30)
-
-
-def ffmpeg_pipe_decode(video_path):
-    r = subprocess.run(
-        [FFPROBE, "-v", "quiet", "-print_format", "json",
-         "-show_streams", "-select_streams", "v:0", str(video_path)],
-        capture_output=True, text=True, check=True)
-    s = json.loads(r.stdout)["streams"][0]
-    w, h = s["width"], s["height"]
-    frame_size = w * h * 3
-    proc = subprocess.Popen(
-        [FFMPEG, "-threads", "0", "-i", str(video_path),
-         "-f", "rawvideo", "-pix_fmt", "bgr24", "-vsync", "0", "pipe:1"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    try:
-        while True:
-            raw = proc.stdout.read(frame_size)
-            if len(raw) < frame_size:
-                break
-            yield np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3)
-    finally:
-        proc.stdout.close()
-        proc.terminate()
-        proc.wait(timeout=30)
-
-
-# ── tool implementations ──────────────────────────────────────────────────────
-# encode(input_path: str, output_mp4: str) -> None   (lazy, no full pre-alloc)
-# decode(video_mp4: str, original_size: int) -> bytes
-
-def _isg_encode(input_path: str, output_mp4: str,
-                width=1920, height=1080, fps=30, block_size=2, crf=18):
-    lw, lh = width // block_size, height // block_size
-    Bpf = (lw * lh) >> 3
-    payload = np.frombuffer(Path(input_path).read_bytes(), dtype=np.uint8)
-    n_frames = -(-len(payload) // Bpf)
-    bpf = lw * lh
-
-    def frame_iter():
-        for i in range(n_frames):
-            b0, b1 = i * Bpf, min((i + 1) * Bpf, len(payload))
-            bits = np.unpackbits(payload[b0:b1])
-            if len(bits) < bpf:
-                bits = np.append(bits, np.zeros(bpf - len(bits), np.uint8))
-            px = (bits.reshape(lh, lw) * 255).astype(np.uint8)
-            px = np.repeat(np.repeat(px, block_size, 0), block_size, 1)
-            yield np.stack([px, px, px], axis=2)
-
-    ffmpeg_pipe_encode(frame_iter(), width, height, fps, crf, output_mp4)
-
-
-def _isg_decode(video_mp4: str, original_size: int) -> bytes:
-    chunks, collected = [], 0
-    for frame in ffmpeg_pipe_decode(video_mp4):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        bits = (gray[1::2, 1::2] > 127).astype(np.uint8).flatten()
-        chunks.append(np.packbits(bits).tobytes())
-        collected += len(chunks[-1])
-        if collected >= original_size:
-            break
-    return b"".join(chunks)[:original_size]
-
-
-def _youbit_encode(input_path: str, output_mp4: str,
-                   width=1920, height=1080, fps=1, crf=18, ecc_symbols=20):
-    import gzip
-    data = Path(input_path).read_bytes()
-    compressed = gzip.compress(data, compresslevel=6)
-    try:
-        sys.path.insert(0, str(ROOT))
-        from bytevault.ecc import encode as rs_encode
-        ecc_data = rs_encode(compressed, ecc_symbols)
-    except Exception:
-        ecc_data = compressed
-    ppf = width * height
-    Bpf = ppf >> 3
-    payload = np.frombuffer(ecc_data, dtype=np.uint8)
-    n_frames = -(-len(payload) // Bpf)
-
-    def frame_iter():
-        for i in range(n_frames):
-            b0, b1 = i * Bpf, min((i + 1) * Bpf, len(payload))
-            bits = np.unpackbits(payload[b0:b1])
-            if len(bits) < ppf:
-                bits = np.append(bits, np.zeros(ppf - len(bits), np.uint8))
-            px = (bits.reshape(height, width) * 255).astype(np.uint8)
-            yield np.stack([px, px, px], axis=2)
-
-    ffmpeg_pipe_encode(frame_iter(), width, height, fps, crf, output_mp4,
-                       extra_opts=["-tune", "grain", "-x264-params", "no-deblock=1"])
-
-
-def _youbit_decode(video_mp4: str, original_size: int, ecc_symbols=20) -> bytes:
-    import gzip
-    sys.path.insert(0, str(ROOT))
-    chunks = []
-    for frame in ffmpeg_pipe_decode(video_mp4):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        chunks.append(np.packbits((gray.flatten() > 127).astype(np.uint8)).tobytes())
-    raw = b"".join(chunks)
-    try:
-        from bytevault.ecc import decode as rs_decode
-        corrected = rs_decode(raw, ecc_symbols, int(len(raw) * (255 - ecc_symbols) / 255))
-        return gzip.decompress(corrected)[:original_size]
-    except Exception:
-        try:
-            return gzip.decompress(raw)[:original_size]
-        except Exception:
-            return raw[:original_size]
-
-
-def _bin2video_encode(input_path: str, output_mp4: str,
-                      width=1280, height=720, fps=30, block_size=5, crf=18):
-    lw, lh = width // block_size, height // block_size
-    Bpf = (lw * lh) >> 3
-    payload = np.frombuffer(Path(input_path).read_bytes(), dtype=np.uint8)
-    n_frames = -(-len(payload) // Bpf)
-    bpf = lw * lh
-
-    def frame_iter():
-        for i in range(n_frames):
-            b0, b1 = i * Bpf, min((i + 1) * Bpf, len(payload))
-            bits = np.unpackbits(payload[b0:b1])
-            if len(bits) < bpf:
-                bits = np.append(bits, np.zeros(bpf - len(bits), np.uint8))
-            px = (bits.reshape(lh, lw) * 255).astype(np.uint8)
-            px = np.repeat(np.repeat(px, block_size, 0), block_size, 1)
-            yield np.stack([px, px, px], axis=2)
-
-    ffmpeg_pipe_encode(frame_iter(), width, height, fps, crf, output_mp4)
-
-
-def _bin2video_decode(video_mp4: str, original_size: int) -> bytes:
-    bs, c = 5, 2
-    chunks, collected = [], 0
-    for frame in ffmpeg_pipe_decode(video_mp4):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        bits = (gray[c::bs, c::bs] > 127).astype(np.uint8).flatten()
-        chunks.append(np.packbits(bits).tobytes())
-        collected += len(chunks[-1])
-        if collected >= original_size:
-            break
-    return b"".join(chunks)[:original_size]
-
-
-def _data2video_encode(input_path: str, output_mp4: str,
-                       width=3840, height=2160, fps=10, crf=18):
-    ppf = width * height
-    Bpf = ppf >> 3
-    payload = np.frombuffer(Path(input_path).read_bytes(), dtype=np.uint8)
-    n_frames = -(-len(payload) // Bpf)
-
-    def frame_iter():
-        for i in range(n_frames):
-            b0, b1 = i * Bpf, min((i + 1) * Bpf, len(payload))
-            bits = np.unpackbits(payload[b0:b1])
-            if len(bits) < ppf:
-                bits = np.append(bits, np.zeros(ppf - len(bits), np.uint8))
-            px = (bits.reshape(height, width) * 255).astype(np.uint8)
-            yield np.stack([px, px, px], axis=2)
-
-    ffmpeg_pipe_encode(frame_iter(), width, height, fps, crf, output_mp4)
-
-
-def _data2video_decode(video_mp4: str, original_size: int) -> bytes:
-    chunks, collected = [], 0
-    for frame in ffmpeg_pipe_decode(video_mp4):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        chunks.append(np.packbits((gray.flatten() > 127).astype(np.uint8)).tobytes())
-        collected += len(chunks[-1])
-        if collected >= original_size:
-            break
-    return b"".join(chunks)[:original_size]
-
-
-def _binary2video_encode(input_path: str, output_mp4: str,
-                         width=320, height=240, fps=1):
-    import gzip
-    compressed = gzip.compress(Path(input_path).read_bytes(), compresslevel=1)
-    Bpf = width * height * 3
-    pad = (-len(compressed)) % Bpf
-    padded = compressed + b"\x00" * pad
-    n_frames = len(padded) // Bpf
-
-    def frame_iter():
-        for i in range(n_frames):
-            chunk = padded[i * Bpf:(i + 1) * Bpf]
-            yield np.frombuffer(chunk, dtype=np.uint8).reshape(height, width, 3)
-
-    ffmpeg_lossless_encode(frame_iter(), width, height, fps, output_mp4)
-
-
-def _binary2video_decode(video_mp4: str, original_size: int) -> bytes:
-    import gzip
-    chunks = []
-    for frame in ffmpeg_lossless_decode(video_mp4):
-        chunks.append(frame.flatten().tobytes())
-    raw = b"".join(chunks)
-    try:
-        return gzip.decompress(raw)[:original_size]
-    except Exception:
-        return raw[:original_size]
-
-
-def _file2video_encode(input_path: str, output_mp4: str,
-                       grid_w=270, grid_h=270, fps=20, crf=40, ecc_nsym=10):
-    sys.path.insert(0, str(ROOT))
-    from bytevault.ecc import encode as rs_encode
-    data = Path(input_path).read_bytes()
-    ecc_data = rs_encode(data, ecc_nsym)
-    Bpf = (grid_w * grid_h) >> 3
-    payload = np.frombuffer(ecc_data, dtype=np.uint8)
-    n_frames = -(-len(payload) // Bpf)
-    bpf = grid_w * grid_h
-    scale = 1080 // grid_h
-    out_w, out_h = grid_w * scale, grid_h * scale
-
-    def frame_iter():
-        for i in range(n_frames):
-            b0, b1 = i * Bpf, min((i + 1) * Bpf, len(payload))
-            bits = np.unpackbits(payload[b0:b1])
-            if len(bits) < bpf:
-                bits = np.append(bits, np.zeros(bpf - len(bits), np.uint8))
-            px = (bits.reshape(grid_h, grid_w) * 255).astype(np.uint8)
-            up = np.repeat(np.repeat(px, scale, 0), scale, 1)
-            yield np.stack([up, up, up], axis=2)
-
-    ffmpeg_pipe_encode(frame_iter(), out_w, out_h, fps, crf, output_mp4)
-
-
-def _file2video_decode(video_mp4: str, original_size: int, ecc_nsym=10) -> bytes:
-    sys.path.insert(0, str(ROOT))
-    from bytevault.ecc import decode as rs_decode, encoded_size
-    scale, c = 4, 2
-    chunks = []
-    for frame in ffmpeg_pipe_decode(video_mp4):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        bits = (gray[c::scale, c::scale] > 127).astype(np.uint8).flatten()
-        chunks.append(np.packbits(bits).tobytes())
-    raw = b"".join(chunks)[:encoded_size(original_size, ecc_nsym)]
-    try:
-        return rs_decode(raw, ecc_nsym, original_size)
-    except Exception:
-        return raw[:original_size]
-
-
-def _bv_encode(input_path: str, output_mp4: str, extra_args=None):
-    cmd = [sys.executable, str(BV_ROOT / "main.py"), "encode",
-           str(input_path), "-o", str(output_mp4), "-q"]
-    if extra_args:
-        cmd += extra_args
-    proc = subprocess.Popen(cmd, cwd=str(BV_ROOT))
-    _reg_proc(proc)
-    try:
-        proc.wait()
-        if proc.returncode != 0:
-            raise subprocess.CalledProcessError(proc.returncode, cmd)
-    finally:
-        _unreg_proc()
-
-
-def _bv_decode_to_bytes(video_mp4: str, original_size: int) -> bytes:
-    out_dir = OUT_DIR / ("bv_dec_" + Path(video_mp4).stem)
-    if out_dir.exists():
-        shutil.rmtree(out_dir, ignore_errors=True)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, str(BV_ROOT / "main.py"), "decode",
-           str(video_mp4), "-o", str(out_dir), "-q"]
-    proc = subprocess.Popen(cmd, cwd=str(BV_ROOT))
-    _reg_proc(proc)
-    try:
-        proc.wait()
-        if proc.returncode != 0:
-            raise subprocess.CalledProcessError(proc.returncode, cmd)
-    finally:
-        _unreg_proc()
-    files = list(out_dir.glob("*"))
-    return files[0].read_bytes()[:original_size] if files else b""
-
-
-# Named top-level wrappers (lambdas aren't picklable across mp.Process on Windows)
-def _bv_enc_bs2_ecc16_1080p(s, d): _bv_encode(s, d, ["--ecc", "16"])
-def _bv_enc_bs1_ecc16_1080p(s, d): _bv_encode(s, d, ["--ecc", "16", "--block-size", "1"])
-def _bv_enc_bs2_ecc16_4k(s, d):    _bv_encode(s, d, ["--ecc", "16", "--4k"])
-def _bv_dec_local(v, sz):           return _bv_decode_to_bytes(v, sz)
-
-
-# ── tool registry ─────────────────────────────────────────────────────────────
-
-@dataclass
-class ToolSpec:
-    name:         str
-    desc:         str
-    encode_fn:    Callable
-    decode_fn:    Callable
-    resolution:   str
-    density:      str
-    ecc:          str
-    codec:        str
-    youtube_safe: bool = False
-
-
-TOOLS: List[ToolSpec] = [
-    ToolSpec(
-        name="ByteVault bs=2 ecc=16 1080p",
-        desc="2x2 blocks, RS-16 ECC, 1920x1080. Default YouTube mode.",
-        encode_fn=_bv_enc_bs2_ecc16_1080p, decode_fn=_bv_dec_local,
-        resolution="1920x1080", density="~60,300 B/fr (net ECC)",
-        ecc="RS nsym=16", codec="H.264 HW/libx264", youtube_safe=True,
-    ),
-    ToolSpec(
-        name="ByteVault bs=1 ecc=16 1080p",
-        desc="1x1 blocks (max 1080p density), RS-16 ECC, 1920x1080.",
-        encode_fn=_bv_enc_bs1_ecc16_1080p, decode_fn=_bv_dec_local,
-        resolution="1920x1080", density="~241,920 B/fr (net ECC)",
-        ecc="RS nsym=16", codec="H.264 HW/libx264", youtube_safe=True,
-    ),
-    ToolSpec(
-        name="ByteVault bs=2 ecc=16 4K",
-        desc="2x2 blocks, RS-16 ECC, 3840x2160. 4x data density vs 1080p bs=2.",
-        encode_fn=_bv_enc_bs2_ecc16_4k, decode_fn=_bv_dec_local,
-        resolution="3840x2160", density="~241,920 B/fr (net ECC)",
-        ecc="RS nsym=16", codec="H.264 HW/libx264", youtube_safe=True,
-    ),
-    ToolSpec(
-        name="ISG-equiv bs=2 no-ecc",
-        desc="ISG algo: 2x2 blocks, 1080p, 30 FPS, NO ECC, NO header.",
-        encode_fn=_isg_encode, decode_fn=_isg_decode,
-        resolution="1920x1080", density="64,800 B/fr",
-        ecc="None (faithful to ISG)", codec="H.264 CRF=18", youtube_safe=True,
-    ),
-    ToolSpec(
-        name="YouBit-equiv BPP=1 1FPS ecc=20",
-        desc="YouBit: 1x1 px, 1080p, 1 FPS, gzip(6)+RS-20. tune=grain no-deblock.",
-        encode_fn=_youbit_encode, decode_fn=_youbit_decode,
-        resolution="1920x1080", density="~204,204 B/fr (net gzip+ECC)",
-        ecc="gzip + RS nsym=20", codec="H.264 CRF=18 tune=grain", youtube_safe=True,
-    ),
-    ToolSpec(
-        name="bin2video-equiv bs=5 no-ecc",
-        desc="bin2video default: 5x5 blocks, 1280x720, 30 FPS, NO ECC.",
-        encode_fn=_bin2video_encode, decode_fn=_bin2video_decode,
-        resolution="1280x720", density="4,608 B/fr (256x144 logical px)",
-        ecc="None (faithful to bin2video)", codec="H.264 CRF=18", youtube_safe=True,
-    ),
-    ToolSpec(
-        name="Data2Video-equiv 4K 1bpp",
-        desc="Data2Video: 1x1 px, 3840x2160, 10 FPS, NO ECC. MP4 vs original GIF.",
-        encode_fn=_data2video_encode, decode_fn=_data2video_decode,
-        resolution="3840x2160", density="~1,036,800 B/fr (1x1 px NOT H.264-safe)",
-        ecc="None (faithful to Data2Video)", codec="H.264 CRF=18 (orig: GIF)",
-        youtube_safe=False,
-    ),
-    ToolSpec(
-        name="binary2video-equiv 320x240 lossless",
-        desc="binary2video: raw bytes as RGB24 pixels, 320x240, gzip(1), FFV1 lossless.",
-        encode_fn=_binary2video_encode, decode_fn=_binary2video_decode,
-        resolution="320x240", density="~230,400 B/fr raw (gzip reduces output)",
-        ecc="None (FFV1 lossless = no corruption)", codec="FFV1 lossless",
-        youtube_safe=False,
-    ),
-    ToolSpec(
-        name="file2video-equiv 1080p RS-10",
-        desc="file2video: 270x270 grid->1080x1080 (4x NN), RS-10 ECC, 20 FPS, CRF=40.",
-        encode_fn=_file2video_encode, decode_fn=_file2video_decode,
-        resolution="1080x1080", density="~8,615 B/fr data (270x270 grid, RS-10)",
-        ecc="RS(255,245) nsym=10", codec="H.264 CRF=40", youtube_safe=True,
-    ),
-]
-
-
-# ── threading-based runner (no spawn overhead; threads share loaded cv2/numpy) ─
-
+# ── timed runner (threading — shares already-loaded numpy/cv2, zero spawn cost) ──
 def _run_timed(fn, args, timeout_s):
-    """Run fn(*args) in a daemon thread. Returns (result, elapsed_s, error_str).
-    On timeout: kills the registered subprocess for that thread, returns TIMEOUT.
-    MemoryError is caught and reported as OOM without crashing the main process.
-    """
-    result_box = [None]
-    error_box  = [None]
+    result_box  = [None]
+    error_box   = [None]
     elapsed_box = [0.0]
-    done_event = threading.Event()
+    done_event  = threading.Event()
 
     def worker():
         t0 = time.perf_counter()
@@ -562,7 +133,6 @@ def _run_timed(fn, args, timeout_s):
     wall_elapsed = time.perf_counter() - t0_wall
 
     if not finished:
-        # Kill the subprocess the thread is currently waiting on
         _kill_thread_proc(t.ident)
         return None, wall_elapsed, f"TIMEOUT (>{timeout_s // 60:.0f} min)"
 
@@ -571,410 +141,574 @@ def _run_timed(fn, args, timeout_s):
         return None, elapsed, error_box[0]
     return result_box[0], elapsed, None
 
+# ── download helpers ──────────────────────────────────────────────────────────
+def _download(url: str, dest: Path):
+    print(f"  Downloading {dest.name}...", end=" ", flush=True)
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r, open(dest, "wb") as f:
+            shutil.copyfileobj(r, f)
+        print(f"done ({dest.stat().st_size // 1_000_000} MB)")
+    except Exception as e:
+        print(f"FAILED: {e}")
+        if dest.exists():
+            dest.unlink()
+        raise
 
-# ── sha256 of file (streamed, handles large files) ────────────────────────────
-
-def _sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-# ── download helper ───────────────────────────────────────────────────────────
-
-def download_jellyfish() -> dict:
+def ensure_jellyfish():
     print("\nChecking / downloading Jellyfish test files...")
-    paths = {}
     for label, fname in JELLYFISH:
         dest = DATA_DIR / fname
-        key = (label, fname)
-        if dest.exists() and dest.stat().st_size > 1_000_000:
-            print(f"  OK  {fname}  ({dest.stat().st_size // 1_048_576} MB)")
-            paths[key] = dest
+        if dest.exists():
+            print(f"  OK  {fname}  ({dest.stat().st_size // 1_000_000} MB)")
             continue
         if fname in PREDOWNLOADED and PREDOWNLOADED[fname].exists():
-            print(f"  Copying {fname} from Downloads...", end="", flush=True)
-            shutil.copy2(PREDOWNLOADED[fname], dest)
-            print(f" done ({dest.stat().st_size // 1_048_576} MB)")
-            paths[key] = dest
-            continue
-        url = BASE_URL + fname
-        print(f"  Downloading {fname}...", end="", flush=True)
-        try:
-            urllib.request.urlretrieve(url, dest)
-            print(f" done ({dest.stat().st_size // 1_048_576} MB)")
-            paths[key] = dest
-        except Exception as e:
-            print(f" FAILED: {e}")
-    return paths
+            src = PREDOWNLOADED[fname]
+            print(f"  Copying {fname} from {src.parent.name}...", end=" ", flush=True)
+            shutil.copy2(src, dest)
+            print(f"done ({dest.stat().st_size // 1_000_000} MB)")
+        else:
+            _download(BASE_URL + fname, dest)
 
-
-# ── per-(tool, file, run) benchmark ──────────────────────────────────────────
-
-def run_one(tool: ToolSpec, input_path: Path, file_label: str, run_idx: int) -> dict:
-    slug = (tool.name.replace(" ", "_").replace("x", "x")
-            .replace("=", "").replace("/", "_").replace(".", ""))
-    fs = Path(input_path).stem[:18]
-    output_mp4 = OUT_DIR / f"{slug}_{fs}_r{run_idx}.mp4"
-    if output_mp4.exists():
-        try:
-            output_mp4.unlink()
-        except PermissionError:
-            pass
-
-    original_size = input_path.stat().st_size
-    orig_sha256   = _sha256_file(str(input_path))
-
-    r = dict(tool=tool.name, file=input_path.name, label=file_label,
-             size_bytes=original_size, run=run_idx,
-             encode_s=None, decode_s=None, mp4_bytes=None,
-             passed=None, status="pending", notes="")
-
-    # Encode
-    print(f"      run {run_idx} encode ...", end="", flush=True)
-    _, enc_s, enc_err = _run_timed(
-        tool.encode_fn, (str(input_path), str(output_mp4)), ENC_TIMEOUT)
-    if enc_err:
-        print(f" {enc_err}")
-        r.update(encode_s=round(enc_s, 2), status=enc_err)
-        return r
-
-    mp4_sz = output_mp4.stat().st_size if output_mp4.exists() else 0
-    print(f" {enc_s:.1f}s  ({mp4_sz // 1_048_576} MB mp4)", flush=True)
-    r.update(encode_s=round(enc_s, 2), mp4_bytes=mp4_sz)
-
-    if not output_mp4.exists() or mp4_sz == 0:
-        r["status"] = "ERROR: no output file"
-        return r
-
-    # Decode — fn(video_mp4, original_size) -> bytes; verify in-thread
-    def _decode_and_verify():
-        data = tool.decode_fn(str(output_mp4), original_size)
-        return hashlib.sha256(data[:original_size]).hexdigest() == orig_sha256
-
-    print(f"      run {run_idx} decode ...", end="", flush=True)
-    match, dec_s, dec_err = _run_timed(_decode_and_verify, (), DEC_TIMEOUT)
-    if dec_err:
-        print(f" {dec_err}")
-        r.update(decode_s=round(dec_s, 2), status=dec_err)
-        return r
-
-    verdict = "PASS" if match else "MISMATCH"
-    print(f" {dec_s:.1f}s  [{verdict}]", flush=True)
-    r.update(decode_s=round(dec_s, 2), passed=match,
-             status="PASS" if match else "MISMATCH")
-    return r
-
-
-def aggregate(runs: list) -> dict:
-    ok = [r for r in runs if r["status"] == "PASS"]
-    base = dict(tool=runs[0]["tool"], file=runs[0]["file"], label=runs[0]["label"],
-                size_bytes=runs[0]["size_bytes"], n_runs=len(runs), runs=runs)
-    if ok:
-        enc = [r["encode_s"] for r in ok]
-        dec = [r["decode_s"] for r in ok if r["decode_s"] is not None]
-        mp4 = [r["mp4_bytes"] for r in ok if r["mp4_bytes"]]
-        base.update(
-            enc_avg=round(sum(enc)/len(enc), 2),
-            enc_min=round(min(enc), 2),
-            enc_max=round(max(enc), 2),
-            dec_avg=round(sum(dec)/len(dec), 2) if dec else None,
-            dec_min=round(min(dec), 2) if dec else None,
-            dec_max=round(max(dec), 2) if dec else None,
-            mp4_bytes_avg=int(sum(mp4)/len(mp4)) if mp4 else None,
-            passed=True, status="PASS",
+# ── third-party tool setup ────────────────────────────────────────────────────
+def setup_file2video():
+    """Clone file2video and install its dependencies (once)."""
+    if not F2V_DIR.exists():
+        print("  Cloning file2video from GitHub...")
+        r = subprocess.run(
+            ["git", "clone", "--depth=1",
+             "https://github.com/karaketir16/file2video.git", str(F2V_DIR)],
+            capture_output=True, text=True,
         )
+        if r.returncode != 0:
+            raise RuntimeError(f"git clone failed:\n{r.stderr}")
+        print(f"  Cloned -> {F2V_DIR}")
     else:
-        first_err = next((r["status"] for r in runs if r["status"] not in ("pending",)), "ERROR")
-        base.update(enc_avg=None, enc_min=None, enc_max=None,
-                    dec_avg=None, dec_min=None, dec_max=None,
-                    mp4_bytes_avg=None, passed=False, status=first_err)
-    return base
+        print(f"  file2video already present at {F2V_DIR.relative_to(ROOT)}")
+
+    req = F2V_DIR / "requirements.txt"
+    if req.exists():
+        print("  Installing file2video dependencies (pip)...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", str(req),
+             "--quiet", "--disable-pip-version-check"],
+            check=False,   # non-fatal; some extras (customtkinter) may be optional
+        )
+
+def setup_youbit():
+    """Ensure YouBit is importable (installed editable in third_party/youbit)."""
+    try:
+        import youbit  # noqa: F401
+        print(f"  YouBit already importable.")
+    except ImportError:
+        print("  Installing YouBit...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-e", str(YB_DIR),
+             "--ignore-requires-python", "--no-build-isolation", "--quiet"],
+            check=False,
+        )
+
+def setup_tools():
+    print("\nSetting up third-party tools...")
+    setup_file2video()
+    setup_youbit()
+    print("  All tools ready.\n")
+
+# ── ByteVault wrappers ────────────────────────────────────────────────────────
+def _bv_encode(input_path: str, output_mp4: str, extra_args=None):
+    cmd = [sys.executable, str(BV_ROOT / "main.py"), "encode",
+           str(input_path), "-o", str(output_mp4), "-q"]
+    if extra_args:
+        cmd += extra_args
+    proc = subprocess.Popen(cmd, cwd=str(BV_ROOT),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _reg_proc(proc)
+    try:
+        proc.wait()
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+    finally:
+        _unreg_proc()
+
+def _bv_decode_to_bytes(video_mp4: str, original_size: int) -> bytes:
+    out_dir = OUT_DIR / ("bv_dec_" + Path(video_mp4).stem)
+    if out_dir.exists():
+        shutil.rmtree(out_dir, ignore_errors=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, str(BV_ROOT / "main.py"), "decode",
+           str(video_mp4), "-o", str(out_dir), "-q"]
+    proc = subprocess.Popen(cmd, cwd=str(BV_ROOT),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _reg_proc(proc)
+    try:
+        proc.wait()
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+    finally:
+        _unreg_proc()
+    files = list(out_dir.glob("*"))
+    return files[0].read_bytes()[:original_size] if files else b""
+
+def _bv_enc_bs2_ecc16_1080p(s, d): _bv_encode(s, d, ["--ecc", "16"])
+def _bv_enc_bs1_ecc16_1080p(s, d): _bv_encode(s, d, ["--ecc", "16", "--block-size", "1"])
+def _bv_enc_bs2_ecc16_4k(s, d):    _bv_encode(s, d, ["--ecc", "16", "--4k"])
+
+# ── file2video wrappers ───────────────────────────────────────────────────────
+def _f2v_encode(input_path: str, output_mp4: str):
+    """Call file2video.py --encode <input> <output> (real GitHub code, unmodified)."""
+    cmd = [sys.executable, str(F2V_DIR / "file2video.py"),
+           "--encode", str(input_path), str(output_mp4)]
+    proc = subprocess.Popen(cmd, cwd=str(F2V_DIR),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _reg_proc(proc)
+    try:
+        proc.wait()
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+    finally:
+        _unreg_proc()
+
+def _f2v_decode(video_mp4: str, original_size: int) -> bytes:
+    """Call file2video.py --decode <video> <outdir> and return recovered bytes."""
+    out_dir = OUT_DIR / ("f2v_dec_" + Path(video_mp4).stem)
+    if out_dir.exists():
+        shutil.rmtree(out_dir, ignore_errors=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, str(F2V_DIR / "file2video.py"),
+           "--decode", str(video_mp4), str(out_dir)]
+    proc = subprocess.Popen(cmd, cwd=str(F2V_DIR),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _reg_proc(proc)
+    try:
+        proc.wait()
+    finally:
+        _unreg_proc()
+    files = list(out_dir.glob("*"))
+    return files[0].read_bytes()[:original_size] if files else b""
+
+# ── YouBit wrappers ───────────────────────────────────────────────────────────
+def _yb_encode(input_path: str, output_mp4: str, settings=None):
+    """Encode using YouBit Encoder.encode_local, extract video.mp4 from zip."""
+    import sys as _sys
+    if str(YB_DIR) not in _sys.path:
+        _sys.path.insert(0, str(YB_DIR))
+    from youbit.encode import Encoder
+    from youbit.settings import Settings
+
+    src = Path(input_path)
+    mp4_out = Path(output_mp4)
+    tmp_dir = OUT_DIR / ("yb_enc_tmp_" + mp4_out.stem)
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    enc_settings = settings or Settings()
+    encoder = Encoder(src, enc_settings)
+    zip_no_ext = encoder.encode_local(tmp_dir)
+    zip_path = Path(str(zip_no_ext) + ".zip")
+
+    # Extract video.mp4 and save b64 metadata alongside output_mp4
+    with zipfile.ZipFile(zip_path, "r") as z:
+        z.extractall(tmp_dir / "extracted")
+    video_src = tmp_dir / "extracted" / "video.mp4"
+    readme = (tmp_dir / "extracted" / "README.txt").read_text()
+    b64_meta = readme.split()[-1]
+
+    shutil.copy2(video_src, mp4_out)
+    Path(str(mp4_out) + ".b64meta").write_text(b64_meta)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-# ── README updater ────────────────────────────────────────────────────────────
+def _yb_decode(video_mp4: str, original_size: int) -> bytes:
+    """Decode using YouBit decode_local, return recovered bytes."""
+    import sys as _sys
+    if str(YB_DIR) not in _sys.path:
+        _sys.path.insert(0, str(YB_DIR))
+    from youbit.decode import decode_local
+    from youbit.metadata import Metadata
 
+    mp4_path = Path(video_mp4)
+    b64_path = Path(str(mp4_path) + ".b64meta")
+    b64_meta = b64_path.read_text().strip()
+    metadata = Metadata.create_from_base64(b64_meta)
+
+    dec_dir = OUT_DIR / ("yb_dec_" + mp4_path.stem)
+    if dec_dir.exists():
+        shutil.rmtree(dec_dir, ignore_errors=True)
+    dec_dir.mkdir(parents=True, exist_ok=True)
+
+    out_path = decode_local(mp4_path, dec_dir, metadata)
+    return out_path.read_bytes()[:original_size]
+
+
+def _yb_enc_bpp1(s, d): _yb_encode(s, d)
+def _yb_enc_bpp2(s, d):
+    from youbit.settings import Settings, BitsPerPixel
+    _yb_encode(s, d, Settings(bits_per_pixel=BitsPerPixel.TWO))
+
+# ── tool registry ─────────────────────────────────────────────────────────────
+@dataclass
+class ToolSpec:
+    name: str
+    desc: str
+    encode_fn: Callable
+    decode_fn: Callable
+    resolution: str
+    density: str
+    ecc: str
+    codec: str
+    source: str           # GitHub URL of real code
+    youtube_safe: bool
+
+TOOLS = [
+    ToolSpec(
+        name="ByteVault bs=2 ecc=16 1080p",
+        desc="ByteVault default: 2×2 blocks, 1920×1080, RS nsym=16 ECC.",
+        encode_fn=_bv_enc_bs2_ecc16_1080p,
+        decode_fn=_bv_decode_to_bytes,
+        resolution="1920×1080", density="~64,800 B/fr",
+        ecc="RS nsym=16", codec="H.264 NVENC/libx264",
+        source="https://github.com/sahilmenon/ByteVault-Infinite--The-Eternal-Encoder",
+        youtube_safe=True,
+    ),
+    ToolSpec(
+        name="ByteVault bs=1 ecc=16 1080p",
+        desc="ByteVault max density: 1×1 blocks, 1920×1080, RS nsym=16 ECC.",
+        encode_fn=_bv_enc_bs1_ecc16_1080p,
+        decode_fn=_bv_decode_to_bytes,
+        resolution="1920×1080", density="~259,200 B/fr",
+        ecc="RS nsym=16", codec="H.264 NVENC/libx264",
+        source="https://github.com/sahilmenon/ByteVault-Infinite--The-Eternal-Encoder",
+        youtube_safe=True,
+    ),
+    ToolSpec(
+        name="ByteVault bs=2 ecc=16 4K",
+        desc="ByteVault 4K: 2×2 blocks, 3840×2160, RS nsym=16 ECC.",
+        encode_fn=_bv_enc_bs2_ecc16_4k,
+        decode_fn=_bv_decode_to_bytes,
+        resolution="3840×2160", density="~259,200 B/fr",
+        ecc="RS nsym=16", codec="H.264 NVENC/libx264",
+        source="https://github.com/sahilmenon/ByteVault-Infinite--The-Eternal-Encoder",
+        youtube_safe=True,
+    ),
+    ToolSpec(
+        name="file2video RS-10",
+        desc="file2video: 270×270 grid→1080p (4× NN), RS nsym=10 ECC, 20 FPS, CRF=40.",
+        encode_fn=_f2v_encode,
+        decode_fn=_f2v_decode,
+        resolution="1080×1080", density="~9,112 B/fr (270×270 grid, RS-10)",
+        ecc="RS(255,245) nsym=10", codec="H.264 CRF=40",
+        source="https://github.com/karaketir16/file2video",
+        youtube_safe=True,
+    ),
+    ToolSpec(
+        name="YouBit bpp=1 default",
+        desc="YouBit: 1920×1080, 1 bit/pixel, RS ECC, gzip. Local roundtrip.",
+        encode_fn=_yb_enc_bpp1,
+        decode_fn=_yb_decode,
+        resolution="1920×1080", density="~259,200 B/fr (1 bpp)",
+        ecc="RS (youbit default)", codec="H.264 libx264 CRF=18 grain",
+        source="https://github.com/MeViMo/youbit",
+        youtube_safe=False,
+    ),
+    ToolSpec(
+        name="YouBit bpp=2 default",
+        desc="YouBit: 1920×1080, 2 bits/pixel, RS ECC, gzip. Local roundtrip.",
+        encode_fn=_yb_enc_bpp2,
+        decode_fn=_yb_decode,
+        resolution="1920×1080", density="~518,400 B/fr (2 bpp)",
+        ecc="RS (youbit default)", codec="H.264 libx264 CRF=18 grain",
+        source="https://github.com/MeViMo/youbit",
+        youtube_safe=False,
+    ),
+]
+
+# ── checkpoint helpers ────────────────────────────────────────────────────────
+_SKIP_STATUSES = {"PASS", "TIMEOUT"}
+
+def _is_done(status: str) -> bool:
+    if status in _SKIP_STATUSES:
+        return True
+    if status.startswith("TIMEOUT"):
+        return True
+    return False
+
+def _load_results() -> list:
+    if RESULTS_JSON.exists():
+        try:
+            d = json.loads(RESULTS_JSON.read_text())
+            return d.get("aggregated", [])
+        except Exception:
+            return []
+    return []
+
+def _save_results(results: list):
+    RESULTS_JSON.write_text(json.dumps({"aggregated": results}, indent=2))
+
+def _find_result(results: list, tool: str, fname: str) -> Optional[dict]:
+    for r in results:
+        if r["tool"] == tool and r["file"] == fname:
+            return r
+    return None
+
+def _find_run(agg: dict, run_n: int) -> Optional[dict]:
+    for r in agg.get("runs", []):
+        if r["run"] == run_n:
+            return r
+    return None
+
+# ── README update ─────────────────────────────────────────────────────────────
 _BENCH_RE = re.compile(
     r'(### Benchmark results\n)(.*?)(\n---\n\n### Detailed analysis)',
     re.DOTALL,
 )
 
-
-def _fmt_s(v, lo, hi):
-    if v is None:
+def _human_time(s):
+    if s is None:
         return "—"
-    if lo is not None and hi is not None and abs(hi - lo) > 0.5:
-        return f"{v:.1f} ({lo:.1f}–{hi:.1f})"
-    return f"{v:.1f}"
+    if s < 60:
+        return f"{s:.1f}s"
+    return f"{s/60:.1f}m"
 
-
-def _fmt_mb(b):
+def _human_mb(b):
     if b is None:
         return "—"
-    if b >= 1_073_741_824:
-        return f"{b/1_073_741_824:.2f} GB"
-    return f"{b/1_048_576:.0f} MB"
+    return f"{b/1e6:.0f} MB"
 
+def _mb_s(size_bytes, seconds):
+    if not seconds or not size_bytes:
+        return "—"
+    return f"{size_bytes / seconds / 1e6:.2f}"
 
-def _fmt_mbps(size_bytes, avg_s):
-    if avg_s and avg_s > 0:
-        return f"{size_bytes / 1e6 / avg_s:.2f}"
-    return "—"
+def update_readme(results: list, file_labels: list):
+    """Rebuild the benchmark section of README.md from checkpoint data."""
+    if not results:
+        return
 
-
-def generate_readme_section(all_results: list, completed_labels: list) -> str:
-    """Build the full benchmark results section (between the h3 markers)."""
     lines = []
-
-    lines.append("> **Machine:** Intel Core i7-1065G7 @ 1.30 GHz · Windows 11 · "
-                 "Python 3.14 · ffmpeg 2026-05-06 · 4 cores  ")
-    lines.append("> **Test data:** Jellyfish video files (larmoire.org) — real-world "
-                 "compressed video used as high-entropy binary blobs.  ")
-    lines.append("> **Methodology:** 3 runs per (tool, file). Enc/Dec columns show "
-                 "avg (min–max) when spread > 0.5 s. 30-min timeout per run. "
-                 "All tools use the same ffmpeg binary.  ")
-    lines.append("> **Faithfulness:** ISG/bin2video have NO ECC (none in original). "
-                 "YouBit uses gzip+RS-20 (same as original). "
-                 "ByteVault uses RS-16 (its default). "
-                 "Data2Video uses MP4 instead of GIF (original is GIF-only, not YouTube-compatible).  ")
     lines.append("")
 
-    # group by file label (preserving JELLYFISH order)
-    order = [fname for _, fname in JELLYFISH]
-    label_map = {fname: lbl for lbl, fname in JELLYFISH}
+    # Excluded tools note
+    lines.append("> **Scope:** Python 3 programs only, using real GitHub code with minimal non-functional changes.")
+    lines.append("> Excluded: DataToVideoEncoderDecoder (pixel_size enc/dec mismatch, OOM on large files) ·")
+    lines.append("> qStore (requires system ffmpeg, QR encoding extremely slow).")
+    lines.append("")
 
-    by_file: dict[str, list] = {}
-    for r in all_results:
-        by_file.setdefault(r["file"], []).append(r)
+    detail_lines = ["<details>"]
+    detail_lines.append("<summary>Per-run timing detail</summary>")
+    detail_lines.append("")
 
-    for fname in order:
-        if fname not in by_file:
+    for label in file_labels:
+        label_results = [r for r in results if r["label"] == label]
+        if not label_results:
             continue
-        lbl = label_map[fname]
-        file_results = by_file[fname]
-        sz = file_results[0]["size_bytes"]
-        sz_str = (f"{sz/1_073_741_824:.2f} GB" if sz >= 1_073_741_824
-                  else f"{sz/1_048_576:.0f} MB")
 
-        lines.append(f"#### {fname}  ({lbl} — {sz_str})")
+        file_bytes = label_results[0]["size_bytes"]
+
+        lines.append(f"#### {label} ({file_bytes / 1e6:.0f} MB raw)")
         lines.append("")
-        lines.append("| Tool | Resolution | Density | ECC | Codec | "
-                     "Enc avg (s) | Dec avg (s) | MP4 size | MB/s enc | Result |")
+        lines.append("| Tool | Resolution | Density | ECC | Codec | Enc avg | Dec avg | MP4 size | Enc MB/s | Result |")
         lines.append("|---|---|---|---|---|---|---|---|---|---|")
 
-        for r in file_results:
-            enc_str  = _fmt_s(r.get("enc_avg"), r.get("enc_min"), r.get("enc_max"))
-            dec_str  = _fmt_s(r.get("dec_avg"), r.get("dec_min"), r.get("dec_max"))
-            mp4_str  = _fmt_mb(r.get("mp4_bytes_avg"))
-            mbps_str = _fmt_mbps(sz, r.get("enc_avg"))
-            status   = r.get("status", "?")
-            if status == "PASS":
-                result_cell = "✅ PASS"
-            elif "TIMEOUT" in status:
-                result_cell = f"⏱ {status}"
-            elif "OOM" in status:
-                result_cell = "💾 OOM (out of memory)"
-            elif "MISMATCH" in status:
-                result_cell = "❌ MISMATCH"
-            elif "SKIPPED" in status:
-                result_cell = f"⏭ {status}"
-            else:
-                result_cell = f"❌ {status[:50]}"
-
-            # find tool spec for density/ecc/codec
-            spec = next((t for t in TOOLS if t.name == r["tool"]), None)
-            res  = spec.resolution if spec else "—"
-            dens = spec.density    if spec else "—"
-            ecc  = spec.ecc        if spec else "—"
-            cod  = spec.codec      if spec else "—"
-
-            lines.append(f"| {r['tool']} | {res} | {dens} | {ecc} | {cod} | "
-                         f"{enc_str} | {dec_str} | {mp4_str} | {mbps_str} | {result_cell} |")
+        for tool in TOOLS:
+            r = next((x for x in label_results if x["tool"] == tool.name), None)
+            if r is None:
+                lines.append(f"| {tool.name} | {tool.resolution} | {tool.density} | {tool.ecc} | {tool.codec} | — | — | — | — | pending |")
+                continue
+            status = r["status"]
+            enc = _human_time(r.get("enc_avg"))
+            dec = _human_time(r.get("dec_avg"))
+            mp4 = _human_mb(r.get("mp4_bytes_avg"))
+            mbs = _mb_s(file_bytes, r.get("enc_avg"))
+            result_cell = "✅ PASS" if status == "PASS" else f"❌ {status}"
+            lines.append(f"| {tool.name} | {tool.resolution} | {tool.density} | {tool.ecc} | {tool.codec} | {enc} | {dec} | {mp4} | {mbs} | {result_cell} |")
 
         lines.append("")
 
-    # Per-run detail tables (collapsed)
-    lines.append("<details>")
-    lines.append("<summary>Per-run timing detail</summary>")
-    lines.append("")
-    for fname in order:
-        if fname not in by_file:
-            continue
-        lbl = label_map[fname]
-        lines.append(f"**{fname}** ({lbl})")
-        lines.append("")
-        lines.append("| Tool | Run | Enc (s) | Dec (s) | MP4 size | Result |")
-        lines.append("|---|---|---|---|---|---|")
-        for agg in by_file[fname]:
-            for run in agg.get("runs", []):
-                enc = f"{run['encode_s']:.1f}" if run.get("encode_s") else "—"
-                dec = f"{run['decode_s']:.1f}" if run.get("decode_s") else "—"
-                mp4 = _fmt_mb(run.get("mp4_bytes"))
-                st  = run.get("status", "?")
-                if st == "PASS":
-                    res = "✅"
-                elif "TIMEOUT" in st:
-                    res = f"⏱ {st}"
-                elif "OOM" in st:
-                    res = "💾 OOM"
-                elif "MISMATCH" in st:
-                    res = "❌ mismatch"
-                elif "SKIPPED" in st:
-                    res = f"⏭ skipped"
-                else:
-                    res = f"❌ {st[:35]}"
-                lines.append(f"| {run['tool']} | {run['run']} | {enc} | {dec} | {mp4} | {res} |")
-        lines.append("")
-    lines.append("</details>")
-    lines.append("")
+        # Per-run detail
+        detail_lines.append(f"##### {label}")
+        detail_lines.append("")
+        detail_lines.append("| Tool | Run | Enc (s) | Dec (s) | MP4 size | Status |")
+        detail_lines.append("|---|---|---|---|---|---|")
+        for tool in TOOLS:
+            r = next((x for x in label_results if x["tool"] == tool.name), None)
+            if r is None:
+                detail_lines.append(f"| {tool.name} | — | — | — | — | pending |")
+                continue
+            for run in r.get("runs", []):
+                e = f"{run['encode_s']:.1f}" if run.get("encode_s") else "—"
+                d = f"{run['decode_s']:.1f}" if run.get("decode_s") else "—"
+                m = f"{run['mp4_bytes']/1e6:.0f} MB" if run.get("mp4_bytes") else "—"
+                s = "✅" if run.get("status") == "PASS" else f"❌ {run.get('status','?')}"
+                detail_lines.append(f"| {tool.name} | {run['run']} | {e} | {d} | {m} | {s} |")
+        detail_lines.append("")
 
-    return "\n".join(lines)
+    detail_lines.append("</details>")
+    lines.extend(detail_lines)
 
-
-def update_readme(all_results: list, completed_labels: list):
-    text = README.read_text(encoding="utf-8")
-    new_body = generate_readme_section(all_results, completed_labels)
-    replaced, n = _BENCH_RE.subn(
-        lambda m: m.group(1) + "\n" + new_body + m.group(3),
-        text,
+    new_body = "\n".join(lines)
+    txt = README.read_text(encoding="utf-8")
+    new_txt, n = _BENCH_RE.subn(
+        lambda m: m.group(1) + new_body + m.group(3),
+        txt,
     )
-    if n == 0:
-        print("  WARNING: benchmark section markers not found in README — skipping update")
-        return
-    README.write_text(replaced, encoding="utf-8")
-    last = completed_labels[-1] if completed_labels else "?"
-    print(f"  README updated through {last}")
+    if n:
+        README.write_text(new_txt, encoding="utf-8")
+    else:
+        print("  [WARN] README benchmark section pattern not matched")
 
+# ── run one (tool, file, run-number) ─────────────────────────────────────────
+def run_one(tool: ToolSpec, src_path: Path, label: str, run_n: int,
+            all_results: list, file_bytes: int):
+
+    stem = f"{tool.name.replace(' ', '_').replace('/', '_')}_{src_path.stem}_r{run_n}"
+    mp4_path = OUT_DIR / (stem + ".mp4")
+
+    # ── encode ──
+    print(f"      run {run_n} encode ...", end=" ", flush=True)
+    _, enc_s, enc_err = _run_timed(tool.encode_fn, (str(src_path), str(mp4_path)), ENC_TIMEOUT)
+
+    if enc_err:
+        print(f"{enc_s:.1f}s  [{enc_err}]")
+        return {"tool": tool.name, "file": src_path.name, "label": label,
+                "size_bytes": file_bytes, "run": run_n,
+                "encode_s": enc_s, "decode_s": None, "mp4_bytes": None,
+                "passed": None, "status": enc_err, "notes": ""}
+
+    mp4_bytes = mp4_path.stat().st_size if mp4_path.exists() else None
+    print(f"{enc_s:.1f}s  ({mp4_bytes // 1_000_000 if mp4_bytes else '?'} MB mp4)")
+
+    # ── decode ──
+    print(f"      run {run_n} decode ...", end=" ", flush=True)
+    recovered, dec_s, dec_err = _run_timed(
+        tool.decode_fn, (str(mp4_path), file_bytes), DEC_TIMEOUT
+    )
+
+    if dec_err:
+        print(f"{dec_s:.1f}s  [{dec_err}]")
+        return {"tool": tool.name, "file": src_path.name, "label": label,
+                "size_bytes": file_bytes, "run": run_n,
+                "encode_s": enc_s, "decode_s": dec_s, "mp4_bytes": mp4_bytes,
+                "passed": None, "status": dec_err, "notes": ""}
+
+    # ── verify ──
+    original = src_path.read_bytes()
+    matched = (recovered == original)
+    status = "PASS" if matched else "MISMATCH"
+    print(f"{dec_s:.1f}s  [{status}]")
+    return {"tool": tool.name, "file": src_path.name, "label": label,
+            "size_bytes": file_bytes, "run": run_n,
+            "encode_s": enc_s, "decode_s": dec_s, "mp4_bytes": mp4_bytes,
+            "passed": matched, "status": status, "notes": ""}
+
+# ── aggregate runs into a summary entry ──────────────────────────────────────
+def _aggregate(tool_name: str, fname: str, label: str, size_bytes: int,
+               runs: list) -> dict:
+    pass_runs = [r for r in runs if r.get("status") == "PASS"]
+    enc_times = [r["encode_s"] for r in pass_runs if r.get("encode_s")]
+    dec_times = [r["decode_s"] for r in pass_runs if r.get("decode_s")]
+    mp4_sizes = [r["mp4_bytes"] for r in pass_runs if r.get("mp4_bytes")]
+    statuses  = [r["status"] for r in runs]
+    final_status = "PASS" if statuses and all(s == "PASS" for s in statuses) \
+        else (statuses[-1] if statuses else "pending")
+    return {
+        "tool": tool_name, "file": fname, "label": label,
+        "size_bytes": size_bytes, "n_runs": len(runs), "runs": runs,
+        "enc_avg":  round(sum(enc_times) / len(enc_times), 2) if enc_times else None,
+        "enc_min":  round(min(enc_times), 2) if enc_times else None,
+        "enc_max":  round(max(enc_times), 2) if enc_times else None,
+        "dec_avg":  round(sum(dec_times) / len(dec_times), 2) if dec_times else None,
+        "dec_min":  round(min(dec_times), 2) if dec_times else None,
+        "dec_max":  round(max(dec_times), 2) if dec_times else None,
+        "mp4_bytes_avg": int(sum(mp4_sizes) / len(mp4_sizes)) if mp4_sizes else None,
+        "passed": final_status == "PASS",
+        "status": final_status,
+    }
 
 # ── main ──────────────────────────────────────────────────────────────────────
-
 def main():
-    # Force UTF-8 output on Windows (avoids cp1252 encode errors for box chars)
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     print("=" * 72)
-    print("  ByteVault Jellyfish Benchmark")
+    print("  ByteVault Jellyfish Benchmark  (Python 3 programs only)")
     print("=" * 72)
 
-    # Statuses that are definitive — never re-run these.
-    # OOM/ERROR/MISMATCH/SKIPPED will be retried (threading may succeed where spawn failed).
-    _SKIP_STATUSES = {"PASS", "TIMEOUT"}
+    setup_tools()
+    ensure_jellyfish()
 
-    def _is_done(status: str) -> bool:
-        if status in _SKIP_STATUSES:
-            return True
-        if status.startswith("TIMEOUT"):
-            return True
-        return False
+    all_results = _load_results()
+    done_count  = sum(
+        1 for r in all_results
+        for run in r.get("runs", [])
+        if _is_done(run.get("status", ""))
+    )
+    retry_count = sum(
+        1 for r in all_results
+        for run in r.get("runs", [])
+        if not _is_done(run.get("status", ""))
+    )
+    need_count = sum(
+        (RUNS - sum(1 for run in (
+            (_find_result(all_results, t.name, f) or {}).get("runs", [])
+        )))
+        for _, f in JELLYFISH
+        for t in TOOLS
+    )
 
-    # Load existing results (resume support)
-    all_results: list = []
-    done_keys: set = set()   # (tool_name, fname, run_idx) that are definitively done
-    if RESULTS_JSON.exists():
-        try:
-            saved = json.loads(RESULTS_JSON.read_text())
-            all_results = saved.get("aggregated", [])
-            skipped = retrying = 0
-            for agg in all_results:
-                for run in agg.get("runs", []):
-                    key = (run["tool"], run["file"], run["run"])
-                    if _is_done(run.get("status", "")):
-                        done_keys.add(key)
-                        skipped += 1
-                    else:
-                        retrying += 1
-            print(f"  Resuming — {skipped} done, {retrying} will be retried.")
-        except Exception:
-            pass
-
-    # Write existing results to README immediately before starting new runs
     if all_results:
+        print(f"  Resuming - {done_count} done, {retry_count + need_count} to run.")
         existing_labels = list(dict.fromkeys(r["label"] for r in all_results))
         print(f"  Writing existing results to README ({len(existing_labels)} file size(s))...")
         update_readme(all_results, existing_labels)
+        print(f"  README updated through {existing_labels[-1] if existing_labels else '—'}")
+    else:
+        print("  Starting fresh benchmark.")
 
-    file_paths = download_jellyfish()
+    file_labels_done = []
 
-    # Track which file-size labels have had all tools run (for README updates)
-    completed_labels = list(dict.fromkeys(r["label"] for r in all_results))
-    for (label, fname), input_path in file_paths.items():
-        print(f"\n{'-'*72}")
-        print(f"  FILE: {fname}  ({label}  /  {input_path.stat().st_size // 1_048_576} MB)")
-        print(f"{'-'*72}")
+    for label, fname in JELLYFISH:
+        src_path = DATA_DIR / fname
+        if not src_path.exists():
+            print(f"\n  [SKIP] {fname} not found, skipping.")
+            continue
 
-        file_agg_results = []  # aggregated per tool for this file
+        file_bytes = src_path.stat().st_size
+        print(f"\n{'-' * 72}")
+        print(f"  FILE: {fname}  ({label}  /  {file_bytes // 1_000_000} MB)")
+        print(f"{'-' * 72}")
+
         for tool in TOOLS:
             print(f"\n  [{tool.name}]")
-            runs = []
-            first_timed_out = False
-            for run_idx in range(1, RUNS + 1):
-                key = (tool.name, fname, run_idx)
-                if key in done_keys:
-                    # Definitively done (PASS or TIMEOUT) — load and skip
-                    existing = next(
-                        (r for agg in all_results
-                         for r in agg.get("runs", [])
-                         if (r["tool"], r["file"], r["run"]) == key),
-                        None,
-                    )
-                    if existing:
-                        print(f"      run {run_idx} — done ({existing['status']}), skipping")
-                        runs.append(existing)
-                        continue
+            agg = _find_result(all_results, tool.name, fname)
+            completed_runs = agg.get("runs", []) if agg else []
 
-                if first_timed_out:
-                    # Skip remaining runs after first timeout
-                    runs.append(dict(
-                        tool=tool.name, file=fname, label=label,
-                        size_bytes=input_path.stat().st_size,
-                        run=run_idx, encode_s=None, decode_s=None,
-                        mp4_bytes=None, passed=None,
-                        status="SKIPPED (prior run timed out)", notes=""))
-                    print(f"      run {run_idx} — skipped (prior timeout)")
+            new_runs = list(completed_runs)
+            for run_n in range(1, RUNS + 1):
+                existing_run = _find_run(agg, run_n) if agg else None
+                if existing_run and _is_done(existing_run.get("status", "")):
+                    print(f"      run {run_n} - done ({existing_run['status']}), skipping")
                     continue
 
-                r = run_one(tool, input_path, label, run_idx)
-                runs.append(r)
-                if "TIMEOUT" in r["status"]:
-                    first_timed_out = True
+                run_result = run_one(tool, src_path, label, run_n, all_results, file_bytes)
 
-                # Checkpoint after every run
-                agg = aggregate(runs)
-                # Update or add this tool's entry for this file
-                existing_idx = next(
-                    (i for i, a in enumerate(all_results)
-                     if a["tool"] == tool.name and a["file"] == fname),
-                    None)
-                if existing_idx is not None:
-                    all_results[existing_idx] = agg
-                else:
-                    all_results.append(agg)
-                RESULTS_JSON.write_text(json.dumps(
-                    {"aggregated": all_results}, indent=2))
+                # Replace or append the run entry
+                new_runs = [r for r in new_runs if r.get("run") != run_n]
+                new_runs.append(run_result)
+                new_runs.sort(key=lambda r: r["run"])
 
-            file_agg_results.append(aggregate(runs))
+                new_agg = _aggregate(tool.name, fname, label, file_bytes, new_runs)
+                all_results = [r for r in all_results
+                               if not (r["tool"] == tool.name and r["file"] == fname)]
+                all_results.append(new_agg)
+                _save_results(all_results)
 
-        completed_labels.append(label)
+        file_labels_done.append(label)
         print(f"\n  Updating README after {label}...")
-        update_readme(all_results, completed_labels)
+        update_readme(all_results, file_labels_done)
+        print(f"  README updated through {label}")
 
-    print("\n" + "=" * 72)
-    print("  BENCHMARK COMPLETE")
-    print("=" * 72)
-    print(f"  Results: {RESULTS_JSON}")
-    print(f"  README : {README}")
-
-    # Print summary
-    print(f"\n{'Tool':<38} {'File':<14} {'Enc avg':>9} {'Dec avg':>9} {'Status':>14}")
-    print("-" * 87)
-    for r in all_results:
-        enc = f"{r['enc_avg']:.1f}s" if r.get("enc_avg") else "—"
-        dec = f"{r['dec_avg']:.1f}s" if r.get("dec_avg") else "—"
-        print(f"  {r['tool'][:36]:<36} {r['label']:<14} {enc:>9} {dec:>9} {r['status']:>12}")
-
+    print(f"\n{'=' * 72}")
+    print("  Benchmark complete.")
+    print(f"{'=' * 72}")
 
 if __name__ == "__main__":
     main()
