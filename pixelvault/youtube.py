@@ -1,5 +1,5 @@
 """
-YouTube upload/download helpers for ByteVault.
+YouTube upload/download helpers for PixelVault.
 
 Credentials:
   client_secret.json   — downloaded from Google Cloud Console (never commit)
@@ -7,18 +7,16 @@ Credentials:
 
 Both files are searched in order:
   1. Current working directory
-  2. ~/.bytevault/
+  2. ~/.pixelvault/
 """
 
-import os
 import subprocess
-import sys
 from pathlib import Path
 
 _SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 _SECRET_NAMES = ["client_secret.json"]
 _TOKEN_NAME = ".youtube_token.json"
-_BYTEVAULT_DIR = Path.home() / ".bytevault"
+_PIXELVAULT_DIR = Path.home() / ".pixelvault"
 
 
 def _find_file(names: list[str]) -> Path | None:
@@ -26,7 +24,7 @@ def _find_file(names: list[str]) -> Path | None:
         p = Path(name)
         if p.exists():
             return p
-        p2 = _BYTEVAULT_DIR / name
+        p2 = _PIXELVAULT_DIR / name
         if p2.exists():
             return p2
     return None
@@ -36,14 +34,14 @@ def _token_path() -> Path:
     local = Path(_TOKEN_NAME)
     if local.exists():
         return local
-    _BYTEVAULT_DIR.mkdir(parents=True, exist_ok=True)
-    return _BYTEVAULT_DIR / _TOKEN_NAME
+    _PIXELVAULT_DIR.mkdir(parents=True, exist_ok=True)
+    return _PIXELVAULT_DIR / _TOKEN_NAME
 
 
 def get_credentials():
     """Return valid OAuth2 credentials, running the browser flow if needed."""
-    from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     token_p = _token_path()
@@ -62,7 +60,7 @@ def get_credentials():
                     "client_secret.json not found.\n"
                     "Download it from Google Cloud Console and place it in:\n"
                     f"  {Path('client_secret.json').resolve()}\n"
-                    f"  or {_BYTEVAULT_DIR / 'client_secret.json'}"
+                    f"  or {_PIXELVAULT_DIR / 'client_secret.json'}"
                 )
             flow = InstalledAppFlow.from_client_secrets_file(str(secret_p), _SCOPES)
             creds = flow.run_local_server(port=0)
@@ -75,7 +73,7 @@ def get_credentials():
 def upload(
     video_path: str,
     title: str | None = None,
-    description: str = "Encoded with ByteVault",
+    description: str = "Encoded with PixelVault",
     privacy: str = "unlisted",
     category_id: str = "22",
 ) -> str:
@@ -148,7 +146,7 @@ def download(video_id_or_url: str, output_path: str, min_height: int = 1080) -> 
     Args:
         video_id_or_url: A YouTube video ID or full URL.
         output_path:     Destination file path (should end in .mp4).
-        min_height:      Minimum video height to request. Use 2160 for 4K-encoded ByteVault videos.
+        min_height:      Minimum video height to request. Use 2160 for 4K-encoded PixelVault videos.
 
     Returns:
         The path to the downloaded file.

@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 """
-Cross-tool benchmark: ByteVault vs ISG / YouBit / bin2video algorithmic equivalents.
+Cross-tool benchmark: PixelVault vs ISG / YouBit / bin2video algorithmic equivalents.
 
 ISG source was deleted from GitHub; YouBit requires Python 3.9-3.11 (we have 3.14);
 bin2video requires gcc. So we implement each tool's encoding algorithm faithfully
@@ -228,11 +228,11 @@ def youbit_encode(data: bytes, output_mp4: str,
     # gzip compress (YouBit always compresses)
     compressed = gzip.compress(data, compresslevel=6)
 
-    # Apply RS ECC (use ByteVault's vectorised RS encoder for accuracy)
+    # Apply RS ECC (use PixelVault's vectorised RS encoder for accuracy)
     sys.path.insert(0, str(Path(__file__).parent.parent /
-                           "ByteVault-Infinite--The-Eternal-Encoder"))
+                           "PixelVault-Infinite--The-Eternal-Encoder"))
     try:
-        from bytevault.ecc import encode as rs_encode
+        from pixelvault.ecc import encode as rs_encode
         ecc_data = rs_encode(compressed, ecc_symbols)
     except Exception:
         ecc_data = compressed   # fallback: no ECC
@@ -258,7 +258,7 @@ def youbit_encode(data: bytes, output_mp4: str,
 def youbit_decode(video_mp4: str, original_size: int, ecc_symbols=20) -> bytes:
     import gzip
     sys.path.insert(0, str(Path(__file__).parent.parent /
-                           "ByteVault-Infinite--The-Eternal-Encoder"))
+                           "PixelVault-Infinite--The-Eternal-Encoder"))
     bits_list = []
     for frame in ffmpeg_pipe_decode(video_mp4):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -267,7 +267,7 @@ def youbit_decode(video_mp4: str, original_size: int, ecc_symbols=20) -> bytes:
     all_bits = np.concatenate(bits_list)
     raw = np.packbits(all_bits).tobytes()
     try:
-        from bytevault.ecc import decode as rs_decode
+        from pixelvault.ecc import decode as rs_decode
         # We don't know exact ecc payload size without the YouBit metadata
         # so we recover and decompress
         # Estimate: data grows by factor ecc_symbols/239 after ECC
@@ -408,7 +408,7 @@ def file2video_encode(data: bytes, output_mp4: str,
                       grid_w=270, grid_h=270, fps=20, crf=40,
                       ecc_nsym=10):
     sys.path.insert(0, str(Path(__file__).parent))
-    from bytevault.ecc import encode as rs_encode
+    from pixelvault.ecc import encode as rs_encode
     ecc_data = rs_encode(data, ecc_nsym)
 
     bits = np.unpackbits(np.frombuffer(ecc_data, dtype=np.uint8))
@@ -430,7 +430,7 @@ def file2video_encode(data: bytes, output_mp4: str,
 
 def file2video_decode(video_mp4: str, original_size: int, ecc_nsym=10) -> bytes:
     sys.path.insert(0, str(Path(__file__).parent))
-    from bytevault.ecc import decode as rs_decode, encoded_size
+    from pixelvault.ecc import decode as rs_decode, encoded_size
     bits_list = []
     scale = 4
     for frame in ffmpeg_pipe_decode(video_mp4):
@@ -451,24 +451,24 @@ def file2video_decode(video_mp4: str, original_size: int, ecc_nsym=10) -> bytes:
         return raw[:original_size]
 
 
-# -- ByteVault via CLI ---------------------------------------------------------
-BV_ROOT = Path("C:/Users/sahil/OneDrive/Documents/GitHub/ByteVault-Infinite--The-Eternal-Encoder")
+# -- PixelVault via CLI ---------------------------------------------------------
+PV_ROOT = Path("C:/Users/sahil/OneDrive/Documents/GitHub/PixelVault-Infinite--The-Eternal-Encoder")
 
-def bytevault_encode(input_file: str, output_mp4: str, extra_args=None) -> float:
-    cmd = [sys.executable, str(BV_ROOT / "main.py"), "encode",
+def pixelvault_encode(input_file: str, output_mp4: str, extra_args=None) -> float:
+    cmd = [sys.executable, str(PV_ROOT / "main.py"), "encode",
            input_file, "-o", output_mp4, "-q"]
     if extra_args:
         cmd += extra_args
     t0 = time.perf_counter()
-    subprocess.run(cmd, check=True, cwd=str(BV_ROOT))
+    subprocess.run(cmd, check=True, cwd=str(PV_ROOT))
     return time.perf_counter() - t0
 
 
-def bytevault_decode(video_mp4: str, output_dir: str) -> float:
-    cmd = [sys.executable, str(BV_ROOT / "main.py"), "decode",
+def pixelvault_decode(video_mp4: str, output_dir: str) -> float:
+    cmd = [sys.executable, str(PV_ROOT / "main.py"), "decode",
            video_mp4, "-o", output_dir, "-q"]
     t0 = time.perf_counter()
-    subprocess.run(cmd, check=True, cwd=str(BV_ROOT))
+    subprocess.run(cmd, check=True, cwd=str(PV_ROOT))
     return time.perf_counter() - t0
 
 
@@ -517,7 +517,7 @@ def run_benchmark(name, size_label, input_path: Path,
 
 def run_simple_benchmark(name, size_label, input_path: Path,
                          encode_fn, decode_fn, output_mp4: Path):
-    """For tools without ByteVault-style CLI — encode/decode handled in-process."""
+    """For tools without PixelVault-style CLI — encode/decode handled in-process."""
     data = input_path.read_bytes()
     original_size = len(data)
     orig_hash = sha256(data)
@@ -552,39 +552,39 @@ def run_simple_benchmark(name, size_label, input_path: Path,
 # TOOL CONFIGURATIONS
 # ===============================================================================
 
-# ByteVault wrappers (uses real CLI)
+# PixelVault wrappers (uses real CLI)
 def bv_encode_default(src, dst):
-    subprocess.run([sys.executable, str(BV_ROOT / "main.py"), "encode",
+    subprocess.run([sys.executable, str(PV_ROOT / "main.py"), "encode",
                     src, "-o", dst, "-q", "--ecc", "16"],
-                   check=True, cwd=str(BV_ROOT))
+                   check=True, cwd=str(PV_ROOT))
 
 def bv_encode_bs1(src, dst):
-    subprocess.run([sys.executable, str(BV_ROOT / "main.py"), "encode",
+    subprocess.run([sys.executable, str(PV_ROOT / "main.py"), "encode",
                     src, "-o", dst, "-q", "--ecc", "16", "--block-size", "1"],
-                   check=True, cwd=str(BV_ROOT))
+                   check=True, cwd=str(PV_ROOT))
 
 def bv_encode_noecc(src, dst):
-    subprocess.run([sys.executable, str(BV_ROOT / "main.py"), "encode",
+    subprocess.run([sys.executable, str(PV_ROOT / "main.py"), "encode",
                     src, "-o", dst, "-q", "--ecc", "0"],
-                   check=True, cwd=str(BV_ROOT))
+                   check=True, cwd=str(PV_ROOT))
 
 def bv_decode(src, dst_dir):
-    subprocess.run([sys.executable, str(BV_ROOT / "main.py"), "decode",
+    subprocess.run([sys.executable, str(PV_ROOT / "main.py"), "decode",
                     src, "-o", dst_dir, "-q"],
-                   check=True, cwd=str(BV_ROOT))
+                   check=True, cwd=str(PV_ROOT))
 
 
 TOOLS = [
     # (name, description, encode_fn, decode_fn, is_simple)
-    ("ByteVault binary bs=2 ecc=16",
+    ("PixelVault binary bs=2 ecc=16",
      "1080p, 2x2 blocks, RS-16 ECC — default YouTube mode",
      bv_encode_default, bv_decode, False),
 
-    ("ByteVault binary bs=1 ecc=16",
+    ("PixelVault binary bs=1 ecc=16",
      "1080p, 1x1 blocks (max 1080p density), RS-16 ECC",
      bv_encode_bs1, bv_decode, False),
 
-    ("ByteVault binary bs=2 no-ecc",
+    ("PixelVault binary bs=2 no-ecc",
      "1080p, 2x2 blocks, no ECC — pure algorithm speed",
      bv_encode_noecc, bv_decode, False),
 
@@ -618,9 +618,9 @@ TOOLS = [
 ]
 
 DENSITY = {
-    "ByteVault binary bs=2 ecc=16":          "~60,300 B/fr (net of 6.7% ECC)",
-    "ByteVault binary bs=1 ecc=16":          "~241,920 B/fr (net of 6.7% ECC)",
-    "ByteVault binary bs=2 no-ecc":          "64,800 B/fr",
+    "PixelVault binary bs=2 ecc=16":          "~60,300 B/fr (net of 6.7% ECC)",
+    "PixelVault binary bs=1 ecc=16":          "~241,920 B/fr (net of 6.7% ECC)",
+    "PixelVault binary bs=2 no-ecc":          "64,800 B/fr",
     "ISG-equiv bs=2 no-ecc":                 "64,800 B/fr (no ECC)",
     "YouBit-equiv BPP=1 1FPS ecc=20":        "~204,204 B/fr (net of ~7.8% ECC+gzip)",
     "bin2video-equiv bs=5 no-ecc":           "4,608 B/fr (1280x720, 5x5 blocks)",
@@ -635,7 +635,7 @@ DENSITY = {
 
 def main():
     print("=" * 72)
-    print("  ByteVault Cross-Tool Benchmark")
+    print("  PixelVault Cross-Tool Benchmark")
     print("=" * 72)
 
     # Generate test files

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Full YouTube roundtrip bit-accuracy test for ByteVault.
+Full YouTube roundtrip bit-accuracy test for PixelVault.
 
 Encodes a file, uploads to YouTube, downloads it back, decodes it,
 and verifies byte-exact recovery through the full YouTube pipeline.
@@ -23,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-from bytevault.vault import VAULT_ENCODED, VAULT_DECODED, ensure_dirs
+from pixelvault.vault import VAULT_ENCODED, VAULT_DECODED, ensure_dirs
 
 
 def _sha256(data: bytes) -> str:
@@ -44,7 +44,7 @@ def _step(n: int, label: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Full YouTube roundtrip bit-accuracy test for ByteVault."
+        description="Full YouTube roundtrip bit-accuracy test for PixelVault."
     )
     parser.add_argument("file", help="File to test (e.g. vault/input/myfile.pdf).")
     parser.add_argument(
@@ -88,7 +88,7 @@ def main():
     original_hash = _sha256(original_data)
 
     print("=" * 64)
-    print("  ByteVault — YouTube Roundtrip Bit-Accuracy Test")
+    print("  PixelVault — YouTube Roundtrip Bit-Accuracy Test")
     print("=" * 64)
     print(f"  File     : {input_path.name}")
     print(f"  Size     : {_human(len(original_data))} ({len(original_data):,} bytes)")
@@ -102,12 +102,12 @@ def main():
     print(f"  Decoded  -> vault/decoded/")
     print("=" * 64)
 
-    from bytevault.encoder import (
+    from pixelvault.encoder import (
         encode_file, MODE_BINARY, MODE_PALETTE, MODE_RGB_BIN, MODE_NIBBLE, MODE_GRAY4,
         WIDTH, HEIGHT, WIDTH_4K, HEIGHT_4K,
     )
-    from bytevault.decoder import decode_file
-    from bytevault import youtube as yt
+    from pixelvault.decoder import decode_file
+    from pixelvault import youtube as yt
 
     mode_int = {"binary": MODE_BINARY, "gray4": MODE_GRAY4, "palette": MODE_PALETTE,
                 "rgb_bin": MODE_RGB_BIN, "nibble": MODE_NIBBLE}[args.mode]
@@ -115,7 +115,7 @@ def main():
     min_h = 2160 if args.four_k else 1080
 
     # ── 1. Encode ─────────────────────────────────────────────────────────────
-    encoded_mp4 = VAULT_ENCODED / f"{input_path.stem}_encoded.mp4"
+    encoded_mp4 = VAULT_ENCODED / f"{input_path.stem}_{args.mode}_ecc{args.ecc_nsym}_encoded.mp4"
     _step(1, f"Encoding -> {encoded_mp4}")
 
     t0 = time.perf_counter()
@@ -141,7 +141,7 @@ def main():
     if len(title) > 100:
         title = title[:97] + "..."
     description = (
-        f"ByteVault YouTube roundtrip test\n"
+        f"PixelVault YouTube roundtrip test\n"
         f"SHA-256: {original_hash}\n"
         f"Mode: {args.mode}  Compress: {args.compress}  ECC nsym: {args.ecc_nsym or 0}"
     )

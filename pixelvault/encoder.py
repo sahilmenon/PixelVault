@@ -49,10 +49,10 @@ _NONCE_SIZE = 12  # AES-GCM standard nonce
 
 def _derive_key(password: str, nonce: bytes) -> bytes:
     """Derive a 32-byte AES-256 key from password + nonce (PBKDF2-SHA256)."""
-    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
-                     salt=nonce + b"ByteVault", iterations=200_000)
+                     salt=nonce + b"PixelVault", iterations=200_000)
     return kdf.derive(password.encode("utf-8"))
 
 
@@ -71,9 +71,9 @@ def _decrypt_payload(ct_with_tag: bytes, password: str, nonce: bytes) -> bytes:
     key = _derive_key(password, nonce)
     return AESGCM(key).decrypt(nonce, ct_with_tag, None)
 
-from .palette import PALETTE_BGR, NIBBLE_PALETTE_BGR
-from . import audio as _audio
-from . import ecc as _ecc
+from . import audio as _audio  # noqa: E402
+from . import ecc as _ecc  # noqa: E402
+from .palette import NIBBLE_PALETTE_BGR, PALETTE_BGR  # noqa: E402
 
 MAGIC_V1 = b"BVI\x01"   # video-only (legacy)
 MAGIC_V2 = b"BVI\x02"   # audio-extended

@@ -1,5 +1,5 @@
 """
-Color palettes for ByteVault encoding modes.
+Color palettes for PixelVault encoding modes.
 
 256-color palette (MODE_PALETTE):
   Layout: R=3 bits, G=3 bits, B=2 bits → 8×8×4 = 256 colors.

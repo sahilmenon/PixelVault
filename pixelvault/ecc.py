@@ -1,5 +1,5 @@
 """
-Reed-Solomon error correction + byte interleaving for ByteVault payload data.
+Reed-Solomon error correction + byte interleaving for PixelVault payload data.
 
 Pipeline (encode):
   file → [zlib] → [RS encode] → [interleave] → video+audio frames

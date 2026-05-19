@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-ByteVault Jellyfish Benchmark — Python 3 programs only, real GitHub code
+PixelVault Jellyfish Benchmark — Python 3 programs only, real GitHub code
 
 Tests only Python 3 file-to-video tools using their actual code unmodified
 (or with minimal non-functional changes: CLI wiring, import compatibility):
 
-  ByteVault (this project)
+  PixelVault (this project)
       python main.py encode / decode
 
   file2video  (github.com/karaketir16/file2video)
@@ -50,7 +50,7 @@ DATA_DIR     = BENCH_DIR / "jellyfish"
 OUT_DIR      = BENCH_DIR / "jf_results"
 RESULTS_JSON = BENCH_DIR / "jellyfish_results.json"
 README       = ROOT / "README.md"
-BV_ROOT      = ROOT
+PV_ROOT      = ROOT
 THIRD_PARTY  = ROOT / "third_party"
 F2V_DIR      = THIRD_PARTY / "file2video"
 YB_DIR       = THIRD_PARTY / "youbit"
@@ -213,13 +213,13 @@ def setup_tools():
     setup_youbit()
     print("  All tools ready.\n")
 
-# ── ByteVault wrappers ────────────────────────────────────────────────────────
+# ── PixelVault wrappers ────────────────────────────────────────────────────────
 def _bv_encode(input_path: str, output_mp4: str, extra_args=None):
-    cmd = [sys.executable, str(BV_ROOT / "main.py"), "encode",
+    cmd = [sys.executable, str(PV_ROOT / "main.py"), "encode",
            str(input_path), "-o", str(output_mp4), "-q"]
     if extra_args:
         cmd += extra_args
-    proc = subprocess.Popen(cmd, cwd=str(BV_ROOT),
+    proc = subprocess.Popen(cmd, cwd=str(PV_ROOT),
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _reg_proc(proc)
     try:
@@ -234,9 +234,9 @@ def _bv_decode_to_bytes(video_mp4: str, original_size: int) -> bytes:
     if out_dir.exists():
         shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, str(BV_ROOT / "main.py"), "decode",
+    cmd = [sys.executable, str(PV_ROOT / "main.py"), "decode",
            str(video_mp4), "-o", str(out_dir), "-q"]
-    proc = subprocess.Popen(cmd, cwd=str(BV_ROOT),
+    proc = subprocess.Popen(cmd, cwd=str(PV_ROOT),
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _reg_proc(proc)
     try:
@@ -361,33 +361,33 @@ class ToolSpec:
 
 TOOLS = [
     ToolSpec(
-        name="ByteVault bs=2 ecc=16 1080p",
-        desc="ByteVault default: 2×2 blocks, 1920×1080, RS nsym=16 ECC.",
+        name="PixelVault bs=2 ecc=16 1080p",
+        desc="PixelVault default: 2×2 blocks, 1920×1080, RS nsym=16 ECC.",
         encode_fn=_bv_enc_bs2_ecc16_1080p,
         decode_fn=_bv_decode_to_bytes,
         resolution="1920×1080", density="~64,800 B/fr",
         ecc="RS nsym=16", codec="H.264 NVENC/libx264",
-        source="https://github.com/sahilmenon/ByteVault-Infinite--The-Eternal-Encoder",
+        source="https://github.com/sahilmenon/PixelVault-Infinite--The-Eternal-Encoder",
         youtube_safe=True,
     ),
     ToolSpec(
-        name="ByteVault bs=1 ecc=16 1080p",
-        desc="ByteVault max density: 1×1 blocks, 1920×1080, RS nsym=16 ECC.",
+        name="PixelVault bs=1 ecc=16 1080p",
+        desc="PixelVault max density: 1×1 blocks, 1920×1080, RS nsym=16 ECC.",
         encode_fn=_bv_enc_bs1_ecc16_1080p,
         decode_fn=_bv_decode_to_bytes,
         resolution="1920×1080", density="~259,200 B/fr",
         ecc="RS nsym=16", codec="H.264 NVENC/libx264",
-        source="https://github.com/sahilmenon/ByteVault-Infinite--The-Eternal-Encoder",
+        source="https://github.com/sahilmenon/PixelVault-Infinite--The-Eternal-Encoder",
         youtube_safe=True,
     ),
     ToolSpec(
-        name="ByteVault bs=2 ecc=16 4K",
-        desc="ByteVault 4K: 2×2 blocks, 3840×2160, RS nsym=16 ECC.",
+        name="PixelVault bs=2 ecc=16 4K",
+        desc="PixelVault 4K: 2×2 blocks, 3840×2160, RS nsym=16 ECC.",
         encode_fn=_bv_enc_bs2_ecc16_4k,
         decode_fn=_bv_decode_to_bytes,
         resolution="3840×2160", density="~259,200 B/fr",
         ecc="RS nsym=16", codec="H.264 NVENC/libx264",
-        source="https://github.com/sahilmenon/ByteVault-Infinite--The-Eternal-Encoder",
+        source="https://github.com/sahilmenon/PixelVault-Infinite--The-Eternal-Encoder",
         youtube_safe=True,
     ),
     ToolSpec(
@@ -629,7 +629,7 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     print("=" * 72)
-    print("  ByteVault Jellyfish Benchmark  (Python 3 programs only)")
+    print("  PixelVault Jellyfish Benchmark  (Python 3 programs only)")
     print("=" * 72)
 
     setup_tools()

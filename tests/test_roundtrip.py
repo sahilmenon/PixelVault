@@ -1,5 +1,5 @@
 """
-Autonomous round-trip tests for ByteVault encoder/decoder.
+Autonomous round-trip tests for PixelVault encoder/decoder.
 
 Creates synthetic test files of various types and sizes, encodes each one
 (video-only BVI\x01 and audio-extended BVI\x02), decodes, and asserts
@@ -31,8 +31,8 @@ def _make_cases():
         # (name, bytes)
         ("empty_file",          b""),
         ("single_byte",         b"\xff"),
-        ("ascii_text",          b"Hello, ByteVault!\nThis is a test of the encoder.\n" * 3),
-        ("utf8_text",           "ByteVault — été à 中文\n".encode("utf-8") * 10),
+        ("ascii_text",          b"Hello, PixelVault!\nThis is a test of the encoder.\n" * 3),
+        ("utf8_text",           "PixelVault — été à 中文\n".encode("utf-8") * 10),
         ("all_zeros",           b"\x00" * 1024),
         ("all_ones",            b"\xff" * 1024),
         ("alternating_bits",    bytes([0xAA, 0x55] * 512)),
@@ -77,8 +77,8 @@ def sha256(data: bytes) -> str:
 
 
 def run_test(name, data, mode_name, mode_int, use_audio, compress, ecc_nsym, tmpdir):
-    from bytevault.encoder import encode_file, DEFAULT_BLOCK
-    from bytevault.decoder import decode_file
+    from pixelvault.encoder import encode_file, DEFAULT_BLOCK
+    from pixelvault.decoder import decode_file
 
     block = DEFAULT_BLOCK[mode_int]
     if WIDTH % block != 0 or HEIGHT % block != 0:
@@ -137,7 +137,7 @@ def main():
     results = []   # (label, status, detail)
     total = pass_count = fail_count = skip_count = 0
 
-    with tempfile.TemporaryDirectory(prefix="bytevault_test_") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="pixelvault_test_") as tmpdir:
         for case_name, data in cases:
             for mode_name, mode_int in MODES:
                 for use_audio in (False, True):

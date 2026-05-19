@@ -1,0 +1,77 @@
+name: Bug Report
+description: Something isn't working correctly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill in as much detail as possible.
+
+  - type: input
+    id: version
+    attributes:
+      label: PixelVault version
+      placeholder: "e.g. 1.0.0  (run: python main.py --version)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "e.g. 3.11.4"
+    validations:
+      required: true
+
+  - type: input
+    id: ffmpeg
+    attributes:
+      label: ffmpeg version
+      placeholder: "output of: ffmpeg -version | head -1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Encoding mode
+      options:
+        - binary (default)
+        - gray4
+        - palette
+        - nibble
+        - rgb_bin
+        - rgb
+        - Not applicable / unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly. Include the exact command you ran.
+      placeholder: |
+        Command: python main.py encode myfile.pdf --ecc 16
+        Expected: encoded MP4 produced
+        Actual: crash / wrong output / ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output / logs
+      description: Paste the full error traceback or relevant log lines.
+      render: shell

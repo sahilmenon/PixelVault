@@ -18,21 +18,28 @@ import zlib
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional, Tuple
-
-from . import ecc as _ecc
 
 import cv2
 import numpy as np
 from tqdm import tqdm
 
+from . import audio as _audio
+from . import ecc as _ecc
 from .encoder import (
-    MAGIC_V1, MAGIC_V2, HEADER_SIZE, HEADER_STRUCT,
-    MODE_BINARY, MODE_RGB, MODE_PALETTE, MODE_RGB_BIN, MODE_NIBBLE, MODE_GRAY4,
-    ENC_NONE, ENC_AES_GCM, _decrypt_payload,
+    ENC_AES_GCM,
+    HEADER_SIZE,
+    HEADER_STRUCT,
+    MAGIC_V1,
+    MAGIC_V2,
+    MODE_BINARY,
+    MODE_GRAY4,
+    MODE_NIBBLE,
+    MODE_PALETTE,
+    MODE_RGB,
+    MODE_RGB_BIN,
+    _decrypt_payload,
 )
 from .palette import bgr_array_to_bytes, bgr_array_to_nibbles
-from . import audio as _audio
 
 _MAGIC_ALL = {MAGIC_V1, MAGIC_V2}
 
@@ -64,7 +71,7 @@ _DETECTION_ORDER = [
 # Video info
 # ---------------------------------------------------------------------------
 
-def _video_info(video_path: str) -> Tuple[int, int, int, int]:
+def _video_info(video_path: str) -> tuple[int, int, int, int]:
     """Return (width, height, n_frames, fps) via ffprobe."""
     result = subprocess.run(
         [
@@ -224,7 +231,7 @@ def _decode_frame(frame_bgr, mode, lw, lh, bs, max_bytes) -> bytes:
 # ---------------------------------------------------------------------------
 
 def _detect_params(first_frame: np.ndarray, w: int, h: int,
-                   verbose: bool = False) -> Tuple[Optional[int], Optional[int]]:
+                   verbose: bool = False) -> tuple[int | None, int | None]:
     mode_names = {MODE_BINARY: "binary", MODE_GRAY4: "gray4", MODE_RGB: "rgb",
                   MODE_PALETTE: "palette", MODE_RGB_BIN: "rgb_bin", MODE_NIBBLE: "nibble"}
     for mode, bs in _DETECTION_ORDER:
@@ -238,7 +245,7 @@ def _detect_params(first_frame: np.ndarray, w: int, h: int,
             got_bs    = hdr[5] if len(hdr) > 5 else None
             match = (got_magic in _MAGIC_ALL and got_mode == mode and got_bs == bs)
             if verbose:
-                tag = "✓ MATCH" if match else "✗"
+                tag = "MATCH" if match else "x"
                 print(f"  [{tag}] mode={mode_names.get(mode, mode):<8} bs={bs}"
                       f"  magic={got_magic!r}  hdr[4]={got_mode}  hdr[5]={got_bs}")
             if match:
@@ -251,10 +258,10 @@ def _detect_params(first_frame: np.ndarray, w: int, h: int,
     # Extra diagnostics: show raw luma values at the gray4 header pixels
     if verbose:
         gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
-        print(f"\n  First-frame luma values at block_size=2 positions (first 32 pixels):")
+        print("\n  First-frame luma values at block_size=2 positions (first 32 pixels):")
         samples = gray[0::2, 0::2].flatten()[:32]
         print(f"  {list(int(v) for v in samples)}")
-        print(f"\n  Expected gray4 dibits for magic BVI\\x01 (first 16 pixels):")
+        print("\n  Expected gray4 dibits for magic BVI\\x01 (first 16 pixels):")
         magic_bytes = b"BVI\x01" + bytes([MODE_GRAY4, 2])  # mode=5, bs=2
         expected_dibits = []
         for byte in magic_bytes[:4]:
@@ -263,10 +270,14 @@ def _detect_params(first_frame: np.ndarray, w: int, h: int,
         print(f"  dibits={expected_dibits}  → Y values={[levels[d] for d in expected_dibits]}")
         classified = []
         for v in samples[:16]:
-            if v < 42:   classified.append(0)
-            elif v < 127: classified.append(1)
-            elif v < 213: classified.append(2)
-            else:         classified.append(3)
+            if v < 42:
+                classified.append(0)
+            elif v < 127:
+                classified.append(1)
+            elif v < 213:
+                classified.append(2)
+            else:
+                classified.append(3)
         print(f"  decoded dibits from frame: {classified}")
         print(f"  expected dibits:           {expected_dibits[:16]}")
         mismatches = sum(a != b for a, b in zip(classified, expected_dibits[:16]))
@@ -390,7 +401,7 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
         stderr=subprocess.DEVNULL,
     )
 
-    def read_frame() -> Optional[np.ndarray]:
+    def read_frame() -> np.ndarray | None:
         raw = proc.stdout.read(frame_size)
         if len(raw) < frame_size:
             return None
@@ -399,15 +410,17 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
     # --- Step 1: auto-detect params from first frame ---
     first_frame = read_frame()
     if first_frame is None:
-        proc.kill(); proc.wait()
+        proc.kill()
+        proc.wait()
         raise RuntimeError("Could not read first frame")
 
     mode, block_size = _detect_params(first_frame, w, h, verbose=not quiet)
     if mode is None:
-        proc.kill(); proc.wait()
+        proc.kill()
+        proc.wait()
         raise RuntimeError(
             "Could not detect encoding parameters. "
-            "Make sure the video was encoded by ByteVault."
+            "Make sure the video was encoded by PixelVault."
         )
 
     lw, lh = w // block_size, h // block_size
@@ -438,7 +451,7 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
             if hdr_flags & 1:
                 print(f"[decode] compressed payload: {hdr_compressed_size:,} bytes (zlib)")
             if hdr_flags & 2:
-                print(f"[decode] encrypted (AES-256-GCM)")
+                print("[decode] encrypted (AES-256-GCM)")
             if hdr_ecc_nsym > 0:
                 print(f"[decode] ECC nsym={hdr_ecc_nsym}  correcting errors...")
             if hdr_interleave_depth > 1:
@@ -523,7 +536,7 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
                 if hdr_flags & 1:
                     print(f"[decode] compressed payload: {hdr_compressed_size:,} bytes (zlib)")
                 if hdr_flags & 2:
-                    print(f"[decode] encrypted (AES-256-GCM)")
+                    print("[decode] encrypted (AES-256-GCM)")
                 if hdr_ecc_nsym > 0:
                     print(f"[decode] ECC nsym={hdr_ecc_nsym}  correcting errors...")
                 if hdr_interleave_depth > 1:
@@ -575,7 +588,7 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
                         if hdr_flags & 1:
                             print(f"[decode] compressed payload: {hdr_compressed_size:,} bytes (zlib)")
                         if hdr_flags & 2:
-                            print(f"[decode] encrypted (AES-256-GCM)")
+                            print("[decode] encrypted (AES-256-GCM)")
                         if hdr_ecc_nsym > 0:
                             print(f"[decode] ECC nsym={hdr_ecc_nsym}  correcting errors...")
                         if hdr_interleave_depth > 1:
@@ -668,6 +681,6 @@ def decode_file(video_path: str, output_dir: str = ".", quiet: bool = False,
     Path(out_path).write_bytes(file_data)
 
     if not quiet:
-        print(f"[decode] → {out_path}  ({len(file_data):,} bytes)")
+        print(f"[decode] -> {out_path}  ({len(file_data):,} bytes)")
 
     return out_path

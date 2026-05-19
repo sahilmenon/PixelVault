@@ -1,5 +1,5 @@
 """
-Audio-track encoder/decoder for ByteVault.
+Audio-track encoder/decoder for PixelVault.
 
 Data is encoded as amplitude-level-modulated PCM samples: each "logical
 sample" maps to one of N_LEVELS discrete amplitude values.  The audio track

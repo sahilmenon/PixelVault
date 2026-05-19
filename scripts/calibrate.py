@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ByteVault YouTube calibration — measures real compression error rates and
+PixelVault YouTube calibration — measures real compression error rates and
 recommends ECC settings for reliable transmission.
 
 Workflow
@@ -28,7 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
-from bytevault.vault import VAULT_ENCODED, VAULT_DECODED, ensure_dirs
+from pixelvault.vault import VAULT_ENCODED, VAULT_DECODED, ensure_dirs
 
 
 # ---------------------------------------------------------------------------
@@ -103,13 +103,13 @@ def main() -> int:
 
     ensure_dirs()
 
-    from bytevault.encoder import (
+    from pixelvault.encoder import (
         encode_file, MODE_BINARY, MODE_GRAY4, MODE_RGB_BIN, MODE_PALETTE, MODE_NIBBLE,
         DEFAULT_BLOCK, WIDTH, HEIGHT, WIDTH_4K, HEIGHT_4K,
     )
-    from bytevault.decoder import decode_file
-    from bytevault import youtube as yt
-    from bytevault import ecc as _ecc
+    from pixelvault.decoder import decode_file
+    from pixelvault import youtube as yt
+    from pixelvault import ecc as _ecc
 
     mode_map = {"binary": MODE_BINARY, "gray4": MODE_GRAY4, "rgb_bin": MODE_RGB_BIN, "palette": MODE_PALETTE, "nibble": MODE_NIBBLE}
     mode_int = mode_map[args.mode]
@@ -119,7 +119,7 @@ def main() -> int:
     res_label = "3840×2160 (4K)" if args.four_k else "1920×1080"
 
     print("=" * 64)
-    print("  ByteVault — YouTube Calibration")
+    print("  PixelVault — YouTube Calibration")
     print("=" * 64)
     print(f"  Mode       : {args.mode}  (block={block_size})")
     print(f"  Resolution : {res_label}  fps=30")
@@ -170,7 +170,7 @@ def main() -> int:
     t0 = time.perf_counter()
     video_id = yt.upload(
         str(encoded_mp4),
-        title="ByteVault calibration",
+        title="PixelVault calibration",
         description=f"Calibration run — mode={args.mode} block={block_size}",
         privacy="unlisted",
     )
@@ -243,7 +243,7 @@ def main() -> int:
     # 255-byte block receives at most ceil(255 / n_frames) bytes from any burst.
     # Conservatively estimate n_frames from the video length and bytes/frame.
     HEADER_SIZE_EST = 128
-    from bytevault.encoder import _bytes_per_frame_video
+    from pixelvault.encoder import _bytes_per_frame_video
     bpf = _bytes_per_frame_video(mode_int, enc_width // block_size, enc_height // block_size)
     n_frames_est = max(1, (total_bytes + HEADER_SIZE_EST) // bpf)
     # With interleave: a burst of `burst` bytes spreads across burst/bpf frames,

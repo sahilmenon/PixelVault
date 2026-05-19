@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ByteVault Comprehensive Test Suite — 23 file types × multiple size tiers.
+PixelVault Comprehensive Test Suite — 23 file types × multiple size tiers.
 
 Usage:
   python test_comprehensive.py                     # 1 KB + 100 KB, all types, binary+palette, +/-audio
@@ -58,11 +58,11 @@ def _rep(line: bytes, n: int) -> bytes:
 # ── Text / XML formats (highly compressible) ─────────────────────────────────
 
 def gen_txt(n):
-    return _rep(b"The quick brown fox jumps over the lazy dog. ByteVault test.\n", n)
+    return _rep(b"The quick brown fox jumps over the lazy dog. PixelVault test.\n", n)
 
 def gen_csv(n):
     h = b"id,name,value,flag,description\n"
-    r = b'42,"Widget A",3.14,true,"ByteVault synthetic CSV test row"\n'
+    r = b'42,"Widget A",3.14,true,"PixelVault synthetic CSV test row"\n'
     return (h + _rep(r, n - len(h)))[:n]
 
 def gen_json(n):
@@ -85,7 +85,7 @@ def gen_svg(n):
     return (h + _rep(e, n - len(h) - len(f)) + f)[:n]
 
 def gen_obj(n):
-    h = b"# ByteVault OBJ test\n"
+    h = b"# PixelVault OBJ test\n"
     v = b"v 0.123 4.567 8.901\n"
     fa = b"f 1 2 3\n"
     return (h + _rep(v + fa, n - len(h)))[:n]
@@ -151,7 +151,7 @@ def gen_parquet(n):
 
 def gen_stl(n):
     n_tri = max(1, (n - 84) // 50)
-    hdr = b"ByteVault STL synthetic test file" + b" " * 47
+    hdr = b"PixelVault STL synthetic test file" + b" " * 47
     tri = struct.pack("<fff", 0.0, 0.0, 1.0) + struct.pack("<" + "fff" * 3, 0, 0, 0, 1, 0, 0, 0, 1, 0) + b"\x00\x00"
     return (hdr + struct.pack("<I", n_tri) + tri * n_tri)[:n]
 
@@ -220,7 +220,7 @@ TIER_ORDER = ["1KB", "100KB", "1MB", "10MB", "100MB", "512MB", "1GB", "2GB"]
 # Large-file writer (chunked to avoid holding GBs in RAM)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PAD_TEXT   = b"ByteVault large-file padding content line. " * 24 + b"\n"  # ~1 KB
+_PAD_TEXT   = b"PixelVault large-file padding content line. " * 24 + b"\n"  # ~1 KB
 _CHUNK_SIZE = 4 * 1_024 * 1_024  # 4 MB
 
 
@@ -355,8 +355,8 @@ def run_test(
     height: int,
     fps: int,
 ) -> TestResult:
-    from bytevault.encoder import encode_file, DEFAULT_BLOCK
-    from bytevault.decoder import decode_file
+    from pixelvault.encoder import encode_file, DEFAULT_BLOCK
+    from pixelvault.decoder import decode_file
 
     r = TestResult(
         file_type=file_type, size_label=size_label, file_size=0,
@@ -617,7 +617,7 @@ def build_plan(args) -> List[Tuple]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _estimate_minutes(plan, width, height, fps) -> float:
-    from bytevault.encoder import DEFAULT_BLOCK
+    from pixelvault.encoder import DEFAULT_BLOCK
     total = 0.0
     for ft, tier, target, mode, audio, compress, ecc in plan:
         mode_int = _MODE_INT[mode]
@@ -639,7 +639,7 @@ def _estimate_minutes(plan, width, height, fps) -> float:
 
 def main():
     p = argparse.ArgumentParser(
-        description="ByteVault comprehensive benchmark — 23 file types × multiple size tiers.",
+        description="PixelVault comprehensive benchmark — 23 file types × multiple size tiers.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -679,7 +679,7 @@ def main():
     plan = build_plan(args)
     est  = _estimate_minutes(plan, args.width, args.height, args.fps)
 
-    print(f"\nByteVault Comprehensive Test Suite")
+    print(f"\nPixelVault Comprehensive Test Suite")
     print(f"  Tests:      {len(plan)}")
     print(f"  Resolution: {args.width}x{args.height} @ {args.fps} fps")
     print(f"  Types:      {sorted(set(t[0] for t in plan))}")

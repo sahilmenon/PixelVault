@@ -1,5 +1,5 @@
 """
-Vault directory layout for ByteVault.
+Vault directory layout for PixelVault.
 
   vault/
     input/    ← drop files here to encode

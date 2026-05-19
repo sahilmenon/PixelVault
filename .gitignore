@@ -1,3 +1,6 @@
+# Claude Code project settings
+.claude/
+
 # YouTube API credentials — never commit these
 client_secret.json
 .youtube_token.json
@@ -15,7 +18,13 @@ venv/
 # Test artifacts
 *.mp4
 *.raw
+*.log
 test_output*/
+_enc_test_*/
+_enc_test_rec*/
+
+# Third-party reference repos (for local comparison only)
+third_party/
 
 # Benchmark working directory (test data, result MP4s, JSON output)
 bench/
