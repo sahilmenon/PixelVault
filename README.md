@@ -674,6 +674,17 @@ Excluded: DataToVideoEncoderDecoder (pixel_size enc/dec mismatch, OOM on large f
 | YouBit bpp=1 default | 1920×1080 | ~259,200 B/fr (1 bpp) | RS (youbit default) | H.264 libx264 CRF=18 grain | — | — | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
 | YouBit bpp=2 default | 1920×1080 | ~518,400 B/fr (2 bpp) | RS (youbit default) | H.264 libx264 CRF=18 grain | — | — | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
 
+#### ~450 MB 4K (452 MB raw)
+
+| Tool | Resolution | Density | ECC | Codec | Enc avg | Dec avg | MP4 size | Enc MB/s | Result |
+|---|---|---|---|---|---|---|---|---|---|
+| ByteVault bs=2 ecc=16 1080p | 1920×1080 | ~64,800 B/fr | RS nsym=16 | H.264 NVENC/libx264 | 7.8m | 9.2m | 4826 MB | 0.97 | ✅ PASS |
+| ByteVault bs=1 ecc=16 1080p | 1920×1080 | ~259,200 B/fr | RS nsym=16 | H.264 NVENC/libx264 | 3.3m | 5.4m | 3888 MB | 2.28 | ✅ PASS |
+| ByteVault bs=2 ecc=16 4K | 3840×2160 | ~259,200 B/fr | RS nsym=16 | H.264 NVENC/libx264 | 9.3m | 9.0m | 4817 MB | 0.81 | ✅ PASS |
+| file2video RS-10 | 1080×1080 | ~9,112 B/fr (270×270 grid, RS-10) | RS(255,245) nsym=10 | H.264 CRF=40 | — | — | — | — | ❌ TIMEOUT (>30 min) |
+| YouBit bpp=1 default | 1920×1080 | ~259,200 B/fr (1 bpp) | RS (youbit default) | H.264 libx264 CRF=18 grain | — | — | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
+| YouBit bpp=2 default | 1920×1080 | ~518,400 B/fr (2 bpp) | RS (youbit default) | H.264 libx264 CRF=18 grain | — | — | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
+
 <details>
 <summary>Per-run timing detail</summary>
 
@@ -768,6 +779,29 @@ Excluded: DataToVideoEncoderDecoder (pixel_size enc/dec mismatch, OOM on large f
 | YouBit bpp=2 default | 1 | 0.9 | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
 | YouBit bpp=2 default | 2 | 0.8 | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
 | YouBit bpp=2 default | 3 | 1.1 | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
+
+##### ~450 MB 4K
+
+| Tool | Run | Enc (s) | Dec (s) | MP4 size | Status |
+|---|---|---|---|---|---|
+| ByteVault bs=2 ecc=16 1080p | 1 | 539.0 | 645.4 | 4826 MB | ✅ |
+| ByteVault bs=2 ecc=16 1080p | 2 | 416.3 | 520.8 | 4826 MB | ✅ |
+| ByteVault bs=2 ecc=16 1080p | 3 | 445.9 | 495.1 | 4826 MB | ✅ |
+| ByteVault bs=1 ecc=16 1080p | 1 | 156.1 | 262.3 | 3888 MB | ✅ |
+| ByteVault bs=1 ecc=16 1080p | 2 | 165.0 | 330.7 | 3888 MB | ✅ |
+| ByteVault bs=1 ecc=16 1080p | 3 | 272.8 | 372.8 | 3888 MB | ✅ |
+| ByteVault bs=2 ecc=16 4K | 1 | 512.5 | 613.7 | 4817 MB | ✅ |
+| ByteVault bs=2 ecc=16 4K | 2 | 564.6 | 513.8 | 4817 MB | ✅ |
+| ByteVault bs=2 ecc=16 4K | 3 | 596.2 | 487.4 | 4817 MB | ✅ |
+| file2video RS-10 | 1 | 1800.0 | — | — | ❌ TIMEOUT (>30 min) |
+| file2video RS-10 | 2 | 1800.0 | — | — | ❌ TIMEOUT (>30 min) |
+| file2video RS-10 | 3 | 1800.1 | — | — | ❌ TIMEOUT (>30 min) |
+| YouBit bpp=1 default | 1 | 3.3 | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
+| YouBit bpp=1 default | 2 | 2.7 | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
+| YouBit bpp=1 default | 3 | 2.5 | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
+| YouBit bpp=2 default | 1 | 2.3 | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
+| YouBit bpp=2 default | 2 | 2.5 | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
+| YouBit bpp=2 default | 3 | 2.2 | — | — | ❌ ERROR: signal only works in main thread of the main interpreter |
 
 </details>
 ---
