@@ -938,6 +938,18 @@ PixelVault at 4K binary bs=2: **259,200 bytes/frame** — same as YouBit/bin2vid
 
 ---
 
+## What I'd do next
+
+**WASM in-browser encoder** — the encode pipeline (Reed-Solomon → bit-pack → ffmpeg) is currently Python + subprocess. Porting the RS codec and frame-packing to WebAssembly would let users encode and decode files entirely in the browser, no Python or ffmpeg install required. The theoretical ceiling is the same (ffmpeg still runs natively for encoding), but the UX would be dramatically simpler for small files.
+
+**Packaged binary distribution** — `pip install` requires Python 3.10+ and a working ffmpeg on PATH, which is a meaningful barrier. Building a PyInstaller bundle (or a Nuitka-compiled binary) for Windows/macOS/Linux would make PixelVault usable without any dev toolchain and is the right distribution format for a tool people actually reach for.
+
+**Region-calibrated default profiles** — YouTube's re-encoder settings vary by datacenter region, upload time, and video age (fresh uploads get more aggressive quantisation during the CDT). The current `calibrate.py` measures error rates for the user's region, but its output is local. Crowd-sourcing calibration results (region → measured BER table) would let first-time users skip calibration with a sensible regional default, which matters because calibration requires uploading a test video and waiting for YouTube processing.
+
+**Audio-channel encoding path (ALAC)** — the pipeline already muxes an optional ALAC lossless audio track as a second data channel (the `BVI\x02` file type). Finishing the audio path (matching encode density, cleaner demux in the header) would roughly double the effective data rate for local use, where the lossless audio track isn't re-encoded.
+
+---
+
 ## Contributing
 
 Issues are welcome — bug reports, YouTube-compatibility findings, and benchmark results from other hardware are especially useful. PRs by discussion: open an issue first to align on scope before writing code. This is a personal research project; unsolicited feature PRs may not be merged.
